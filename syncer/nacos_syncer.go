@@ -22,6 +22,7 @@ type Syncer struct {
 	NacosDataID string
 	TXTPath     string
 	XDBPath     string
+	XDBVersion  *xdb.Version
 }
 
 // Sync runs one full diff-and-update cycle:
@@ -50,7 +51,11 @@ func (s *Syncer) Sync() error {
 	if err != nil {
 		return fmt.Errorf("load xdb: %w", err)
 	}
-	searcher, err := xdb.NewWithBuffer(xdb.IPv4, cBuff)
+	version := s.XDBVersion
+	if version == nil {
+		version = xdb.IPv4
+	}
+	searcher, err := xdb.NewWithBuffer(version, cBuff)
 	if err != nil {
 		return fmt.Errorf("init xdb searcher: %w", err)
 	}
@@ -134,29 +139,37 @@ func (s *Syncer) loadNacosMap() (map[string]string, error) {
 	return m, nil
 }
 
-// subnetProbeIP returns a usable probe IP from a CIDR (network address + 1).
-// E.g. "101.32.5.0/24" → "101.32.5.1"
+// subnetProbeIP returns a probe IP from a CIDR using network address itself.
 func subnetProbeIP(cidr string) (string, error) {
 	_, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return "", err
 	}
-	probe := make(net.IP, len(ipNet.IP))
-	copy(probe, ipNet.IP)
-	probe[len(probe)-1]++
-	return probe.String(), nil
+	return ipNet.IP.String(), nil
 }
 
 // regionToKey converts an ip2region SearchByStr result to a Nacos map key.
-// SearchByStr format: "中国|0|广东省|广州市|电信"
+// SearchByStr common formats:
+// - v4 old: "中国|0|广东省|广州市|电信"
+// - v6/new: "中国|广东省|深圳市|电信|CN"
 // Output key uses the same normalization as the builder: "广东|电信"
 func regionToKey(regionStr string) string {
 	parts := strings.Split(regionStr, "|")
 	if len(parts) < 5 {
 		return ""
 	}
-	province := builder.NormalizeProvince(strings.TrimSpace(parts[2]))
-	isp := builder.NormalizeISP(strings.TrimSpace(parts[4]))
+
+	var province, isp string
+	if strings.TrimSpace(parts[1]) == "0" {
+		province = strings.TrimSpace(parts[2])
+		isp = strings.TrimSpace(parts[4])
+	} else {
+		province = strings.TrimSpace(parts[1])
+		isp = strings.TrimSpace(parts[3])
+	}
+
+	province = builder.NormalizeProvince(province)
+	isp = builder.NormalizeISP(isp)
 	if province == "" || province == "0" || isp == "" || isp == "0" {
 		return ""
 	}

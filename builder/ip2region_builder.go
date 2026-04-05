@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"log"
+	"net/netip"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -35,7 +35,7 @@ func BuildSubnetMap(txtPath string) (map[string]string, error) {
 	}
 	defer f.Close()
 
-	firstIPMap := make(map[string][2]uint32) // key → [startIP, endIP]
+	firstIPMap := make(map[string][2]string) // key -> [startIP, endIP]
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 1<<20), 1<<20)
 
@@ -68,18 +68,15 @@ func BuildSubnetMap(txtPath string) (map[string]string, error) {
 		province = NormalizeProvince(province)
 		isp = NormalizeISP(isp)
 
-		startIP, err := ipToUint32(parts[0])
-		if err != nil {
-			continue
-		}
-		endIP, err := ipToUint32(parts[1])
-		if err != nil {
+		startIP := strings.TrimSpace(parts[0])
+		endIP := strings.TrimSpace(parts[1])
+		if startIP == "" || endIP == "" {
 			continue
 		}
 
 		key := province + "|" + isp
 		if _, exists := firstIPMap[key]; !exists {
-			firstIPMap[key] = [2]uint32{startIP, endIP}
+			firstIPMap[key] = [2]string{startIP, endIP}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -91,7 +88,11 @@ func BuildSubnetMap(txtPath string) (map[string]string, error) {
 
 	result := make(map[string]string, len(firstIPMap))
 	for key, r := range firstIPMap {
-		result[key] = toCIDR(r[0], r[1])
+		cidr, err := toCIDR(r[0], r[1])
+		if err != nil {
+			continue
+		}
+		result[key] = cidr
 	}
 	return result, nil
 }
@@ -113,38 +114,43 @@ func NormalizeISP(isp string) string {
 	return strings.TrimSpace(isp)
 }
 
-// toCIDR computes a CIDR block from a start/end IP pair.
-// The prefix length is chosen as the smallest power-of-2 block that covers
-// the range, which avoids always hard-coding /24.
-// e.g. a 256-address range → /24; a 512-address range → /23.
-func toCIDR(startIP, endIP uint32) string {
-	count := endIP - startIP + 1
-	var prefixLen int
-	for i := 0; i < 32; i++ {
-		if (1 << i) >= int(count) {
-			prefixLen = 32 - i
+// toCIDR computes a converged CIDR block from a start/end IP pair.
+// It supports both IPv4 and IPv6 source ranges.
+func toCIDR(startIP, endIP string) (string, error) {
+	start, err := netip.ParseAddr(startIP)
+	if err != nil {
+		return "", err
+	}
+	end, err := netip.ParseAddr(endIP)
+	if err != nil {
+		return "", err
+	}
+	if start.BitLen() != end.BitLen() {
+		return "", fmt.Errorf("mixed ip versions: %s %s", startIP, endIP)
+	}
+
+	sb := start.AsSlice()
+	eb := end.AsSlice()
+	prefixLen := 0
+	for i := 0; i < len(sb); i++ {
+		if sb[i] == eb[i] {
+			prefixLen += 8
+			continue
+		}
+		x := sb[i] ^ eb[i]
+		for bit := 7; bit >= 0; bit-- {
+			if ((x >> uint(bit)) & 1) == 0 {
+				prefixLen++
+				continue
+			}
 			break
 		}
+		break
 	}
-	return fmt.Sprintf("%s/%d", uint32ToIP(startIP), prefixLen)
-}
 
-func ipToUint32(ip string) (uint32, error) {
-	parts := strings.Split(strings.TrimSpace(ip), ".")
-	if len(parts) != 4 {
-		return 0, fmt.Errorf("invalid IP: %s", ip)
+	p, err := start.Prefix(prefixLen)
+	if err != nil {
+		return "", err
 	}
-	var r uint32
-	for _, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil || n < 0 || n > 255 {
-			return 0, fmt.Errorf("invalid IP octet: %s", p)
-		}
-		r = r<<8 | uint32(n)
-	}
-	return r, nil
-}
-
-func uint32ToIP(n uint32) string {
-	return fmt.Sprintf("%d.%d.%d.%d", n>>24, (n>>16)&0xff, (n>>8)&0xff, n&0xff)
+	return p.Masked().String(), nil
 }

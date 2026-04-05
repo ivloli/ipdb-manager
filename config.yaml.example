@@ -2,14 +2,18 @@ nacos:
   addr:      "nacos:8848"       # host:port of Nacos server
   namespace: "coredns"          # Nacos namespace
   group:     "subnet_mapping"   # Nacos config group
-  data_id:   "subnet_map"       # Nacos config data ID
+  data_id:   "subnet_map"       # Nacos config data ID for IPv4
+  data_id_v6: "subnet_map_v6"   # Nacos config data ID for IPv6
 
 ip2region:
   dir:           "/data/ip2region"                          # local data directory (stores .version file)
-  txt_path:      "/data/ip2region/ipv4_source.txt"         # downloaded from GitHub
-  xdb_path:      "/data/ip2region/ip2region_v4.xdb"        # downloaded from GitHub
-  poll_interval: "1h"                                      # how often to check GitHub for a new release
-  github_token:  "${GITHUB_TOKEN}"                         # optional; avoids anonymous API rate limit (60 req/h)
+  txt_path:      "/data/ip2region/ipv4_source.txt"          # extracted from release tarball
+  xdb_path:      "/data/ip2region/ip2region_v4.xdb"         # extracted from release tarball
+  txt_v6_path:   "/data/ip2region/ipv6_source.txt"          # extracted from release tarball
+  xdb_v6_path:   "/data/ip2region/ip2region_v6.xdb"         # extracted from release tarball
+  poll_interval: "1h"                                       # how often to check GitHub for a new release
+  github_token:  "${GITHUB_TOKEN}"                          # optional; avoids anonymous API rate limit (60 req/h)
+  releases_url:  "https://api.github.com/repos/lionsoul2014/ip2region/releases/latest"
 
 api:
   listen: ":9090"

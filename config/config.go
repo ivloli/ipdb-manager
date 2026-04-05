@@ -19,6 +19,7 @@ type NacosConfig struct {
 	Namespace string `yaml:"namespace"`
 	Group     string `yaml:"group"`
 	DataID    string `yaml:"data_id"`
+	DataIDV6  string `yaml:"data_id_v6"`
 	Username  string `yaml:"username"`
 	Password  string `yaml:"password"`
 }
@@ -27,11 +28,11 @@ type IP2RegionConfig struct {
 	Dir          string        `yaml:"dir"`
 	TXTPath      string        `yaml:"txt_path"`
 	XDBPath      string        `yaml:"xdb_path"`
+	TXTPathV6    string        `yaml:"txt_v6_path"`
+	XDBPathV6    string        `yaml:"xdb_v6_path"`
 	PollInterval time.Duration `yaml:"poll_interval"`
 	GithubToken  string        `yaml:"github_token"`
 	ReleasesURL  string        `yaml:"releases_url"`
-	TXTDownURL   string        `yaml:"txt_download_url"`
-	XDBDownURL   string        `yaml:"xdb_download_url"`
 }
 
 type APIConfig struct {
@@ -65,23 +66,29 @@ func (c *Config) validate() error {
 	if c.Nacos.DataID == "" {
 		c.Nacos.DataID = "subnet_map"
 	}
+	if c.Nacos.DataIDV6 == "" {
+		c.Nacos.DataIDV6 = "subnet_map_v6"
+	}
+	if c.IP2Region.Dir == "" {
+		c.IP2Region.Dir = "data/ip2region"
+	}
 	if c.IP2Region.TXTPath == "" {
-		return fmt.Errorf("ip2region.txt_path is required")
+		c.IP2Region.TXTPath = c.IP2Region.Dir + "/ipv4_source.txt"
 	}
 	if c.IP2Region.XDBPath == "" {
-		return fmt.Errorf("ip2region.xdb_path is required")
+		c.IP2Region.XDBPath = c.IP2Region.Dir + "/ip2region_v4.xdb"
+	}
+	if c.IP2Region.TXTPathV6 == "" {
+		c.IP2Region.TXTPathV6 = c.IP2Region.Dir + "/ipv6_source.txt"
+	}
+	if c.IP2Region.XDBPathV6 == "" {
+		c.IP2Region.XDBPathV6 = c.IP2Region.Dir + "/ip2region_v6.xdb"
 	}
 	if c.IP2Region.PollInterval <= 0 {
 		c.IP2Region.PollInterval = time.Hour
 	}
 	if c.IP2Region.ReleasesURL == "" {
 		c.IP2Region.ReleasesURL = "https://api.github.com/repos/lionsoul2014/ip2region/releases/latest"
-	}
-	if c.IP2Region.TXTDownURL == "" {
-		c.IP2Region.TXTDownURL = "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ipv4_source.txt"
-	}
-	if c.IP2Region.XDBDownURL == "" {
-		c.IP2Region.XDBDownURL = "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb"
 	}
 	return nil
 }

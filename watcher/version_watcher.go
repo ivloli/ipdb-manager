@@ -1,6 +1,8 @@
 package watcher
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
@@ -10,9 +12,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/lionsoul2014/ip2region/binding/golang/xdb"
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
 
 	"ipdb-manager/syncer"
@@ -21,21 +25,33 @@ import (
 // VersionWatcher polls the ip2region GitHub release tag.
 // When the tag changes it downloads the new data files and syncs Nacos.
 type VersionWatcher struct {
-	TXTPath      string
-	XDBPath      string
-	VersionFile  string // persisted local version tag, e.g. /data/ip2region/.version
-	PollInterval time.Duration
-	GithubToken  string // optional; prevents hitting the 60 req/h anonymous limit
-	ReleasesURL  string
-	TXTDownURL   string
-	XDBDownURL   string
-	NacosClient  config_client.IConfigClient
-	NacosGroup   string
-	NacosDataID  string
+	TXTPath       string
+	XDBPath       string
+	TXTPathV6     string
+	XDBPathV6     string
+	VersionFile   string // persisted local version tag, e.g. /data/ip2region/.version
+	PollInterval  time.Duration
+	GithubToken   string // optional; prevents hitting the 60 req/h anonymous limit
+	ReleasesURL   string
+	NacosClient   config_client.IConfigClient
+	NacosGroup    string
+	NacosDataID   string
+	NacosDataIDV6 string
+}
+
+type syncTarget struct {
+	name      string
+	txtPath   string
+	xdbPath   string
+	dataID    string
+	version   *xdb.Version
+	txtSuffix string
+	xdbSuffix string
 }
 
 type githubRelease struct {
-	TagName string `json:"tag_name"`
+	TagName    string `json:"tag_name"`
+	TarballURL string `json:"tarball_url"`
 }
 
 // Start checks once on startup, then polls on PollInterval. Blocks forever.
@@ -61,63 +77,133 @@ func (w *VersionWatcher) checkAndUpdate() error {
 	}
 
 	// 1. Fetch latest GitHub release tag.
-	latestTag, err := w.fetchLatestTag(httpClient)
+	rel, err := w.fetchLatestRelease(httpClient)
 	if err != nil {
-		return fmt.Errorf("fetch latest tag: %w", err)
+		return fmt.Errorf("fetch latest release: %w", err)
 	}
+	latestTag := rel.TagName
 
 	// 2. Check local version.
 	localTag := w.readLocalVersion()
 
+	targets := w.syncTargets()
+
 	// manual 模式：跳过下载，直接用现有文件同步 Nacos，版本号保持 manual 不变。
 	if localTag == "manual" {
 		log.Printf("[watcher] manual mode, latest upstream=%s, syncing nacos with existing files...", latestTag)
-		if _, err := os.Stat(w.TXTPath); os.IsNotExist(err) {
-			log.Printf("[watcher] manual mode: %s not found, skipping sync", w.TXTPath)
-			return nil
-		}
-		if _, err := os.Stat(w.XDBPath); os.IsNotExist(err) {
-			log.Printf("[watcher] manual mode: %s not found, skipping sync", w.XDBPath)
-			return nil
-		}
-		return w.runSync()
+		return w.runSyncTargets(targets)
 	}
 
-	if localTag == latestTag {
+	versionChanged := localTag != latestTag
+	missingTargets := make([]syncTarget, 0, len(targets))
+	for _, t := range targets {
+		if targetFilesMissing(t) {
+			missingTargets = append(missingTargets, t)
+		}
+	}
+
+	if !versionChanged && len(missingTargets) == 0 {
 		log.Printf("[watcher] already at latest (%s), nothing to do", latestTag)
 		return nil
 	}
-	log.Printf("[watcher] version %q → %q, downloading...", localTag, latestTag)
 
-	// 3. Download new files (atomic tmp → rename).
-	if err := downloadFile(httpClient, w.TXTDownURL, w.TXTPath); err != nil {
-		return fmt.Errorf("download ipv4_source.txt: %w", err)
-	}
-	if err := downloadFile(httpClient, w.XDBDownURL, w.XDBPath); err != nil {
-		return fmt.Errorf("download ip2region_v4.xdb: %w", err)
-	}
-	log.Printf("[watcher] files downloaded")
+	if versionChanged {
+		log.Printf("[watcher] version %q → %q, downloading full release files...", localTag, latestTag)
+		if err := w.downloadAndExtractReleaseData(httpClient, rel, targets); err != nil {
+			return err
+		}
+		log.Printf("[watcher] release files downloaded and extracted")
 
-	// 4. Sync updated data to Nacos.
-	if err := w.runSync(); err != nil {
+		if err := w.runSyncTargets(targets); err != nil {
+			return err
+		}
+
+		if err := w.writeLocalVersion(latestTag); err != nil {
+			log.Printf("[watcher] warning: write local version failed: %v", err)
+		}
+		log.Printf("[watcher] update complete, current version: %s", latestTag)
+		return nil
+	}
+
+	missingNames := make([]string, 0, len(missingTargets))
+	for _, t := range missingTargets {
+		missingNames = append(missingNames, t.name)
+	}
+	sort.Strings(missingNames)
+	log.Printf("[watcher] local files missing for %s at version %s, repairing from release...",
+		strings.Join(missingNames, ","), latestTag)
+
+	if err := w.downloadAndExtractReleaseData(httpClient, rel, missingTargets); err != nil {
 		return err
 	}
+	log.Printf("[watcher] missing release files repaired")
 
-	// 5. Persist version only after full success (guarantees idempotency on retry).
-	if err := w.writeLocalVersion(latestTag); err != nil {
-		log.Printf("[watcher] warning: write local version failed: %v", err)
+	if err := w.runSyncTargets(missingTargets); err != nil {
+		return err
 	}
-	log.Printf("[watcher] update complete, current version: %s", latestTag)
+	log.Printf("[watcher] missing data sync complete at version: %s", latestTag)
 	return nil
 }
 
-func (w *VersionWatcher) runSync() error {
+func (w *VersionWatcher) syncTargets() []syncTarget {
+	return []syncTarget{
+		{
+			name:      "v4",
+			txtPath:   w.TXTPath,
+			xdbPath:   w.XDBPath,
+			dataID:    w.NacosDataID,
+			version:   xdb.IPv4,
+			txtSuffix: "data/ipv4_source.txt",
+			xdbSuffix: "data/ip2region_v4.xdb",
+		},
+		{
+			name:      "v6",
+			txtPath:   w.TXTPathV6,
+			xdbPath:   w.XDBPathV6,
+			dataID:    w.NacosDataIDV6,
+			version:   xdb.IPv6,
+			txtSuffix: "data/ipv6_source.txt",
+			xdbSuffix: "data/ip2region_v6.xdb",
+		},
+	}
+}
+
+func targetFilesMissing(t syncTarget) bool {
+	if _, err := os.Stat(t.txtPath); err != nil {
+		return true
+	}
+	if _, err := os.Stat(t.xdbPath); err != nil {
+		return true
+	}
+	return false
+}
+
+func (w *VersionWatcher) runSyncTargets(targets []syncTarget) error {
+	for _, t := range targets {
+		if err := w.runSyncOne(t); err != nil {
+			return fmt.Errorf("sync %s nacos: %w", t.name, err)
+		}
+	}
+	return nil
+}
+
+func (w *VersionWatcher) runSyncOne(t syncTarget) error {
+	if _, err := os.Stat(t.txtPath); os.IsNotExist(err) {
+		log.Printf("[watcher] skip sync for %s: txt not found", t.dataID)
+		return nil
+	}
+	if _, err := os.Stat(t.xdbPath); os.IsNotExist(err) {
+		log.Printf("[watcher] skip sync for %s: xdb not found", t.dataID)
+		return nil
+	}
+
 	s := &syncer.Syncer{
 		NacosClient: w.NacosClient,
 		NacosGroup:  w.NacosGroup,
-		NacosDataID: w.NacosDataID,
-		TXTPath:     w.TXTPath,
-		XDBPath:     w.XDBPath,
+		NacosDataID: t.dataID,
+		TXTPath:     t.txtPath,
+		XDBPath:     t.xdbPath,
+		XDBVersion:  t.version,
 	}
 	if err := s.Sync(); err != nil {
 		return fmt.Errorf("sync nacos: %w", err)
@@ -125,10 +211,10 @@ func (w *VersionWatcher) runSync() error {
 	return nil
 }
 
-func (w *VersionWatcher) fetchLatestTag(hc *http.Client) (string, error) {
+func (w *VersionWatcher) fetchLatestRelease(hc *http.Client) (*githubRelease, error) {
 	req, err := http.NewRequest("GET", w.ReleasesURL, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	if w.GithubToken != "" {
@@ -137,18 +223,23 @@ func (w *VersionWatcher) fetchLatestTag(hc *http.Client) (string, error) {
 
 	resp, err := hc.Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("github API returned %d", resp.StatusCode)
+		return nil, fmt.Errorf("github API returned %d", resp.StatusCode)
 	}
 
 	var rel githubRelease
 	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return "", err
+		return nil, err
 	}
-	return strings.TrimSpace(rel.TagName), nil
+	rel.TagName = strings.TrimSpace(rel.TagName)
+	rel.TarballURL = strings.TrimSpace(rel.TarballURL)
+	if rel.TagName == "" || rel.TarballURL == "" {
+		return nil, fmt.Errorf("invalid latest release payload")
+	}
+	return &rel, nil
 }
 
 func (w *VersionWatcher) readLocalVersion() string {
@@ -160,19 +251,136 @@ func (w *VersionWatcher) writeLocalVersion(tag string) error {
 	return os.WriteFile(w.VersionFile, []byte(tag+"\n"), 0644)
 }
 
-// downloadFile downloads url to destPath via a temporary file (atomic rename).
-// Logs the SHA-256 of the downloaded content for auditability.
-func downloadFile(hc *http.Client, url, destPath string) error {
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+func (w *VersionWatcher) downloadAndExtractReleaseData(hc *http.Client, rel *githubRelease, targets []syncTarget) error {
+	if len(targets) == 0 {
+		return nil
+	}
+
+	req, err := http.NewRequest("GET", rel.TarballURL, nil)
+	if err != nil {
 		return err
 	}
-	resp, err := hc.Get(url)
+	if w.GithubToken != "" {
+		req.Header.Set("Authorization", "Bearer "+w.GithubToken)
+	}
+
+	resp, err := hc.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: status %d", url, resp.StatusCode)
+		return fmt.Errorf("GET %s: status %d", rel.TarballURL, resp.StatusCode)
+	}
+
+	tmpTar, err := os.CreateTemp(filepath.Dir(w.VersionFile), "ip2region-*.tar.gz")
+	if err != nil {
+		return err
+	}
+	tmpTarPath := tmpTar.Name()
+	defer os.Remove(tmpTarPath)
+
+	h := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(tmpTar, h), resp.Body); err != nil {
+		tmpTar.Close()
+		return err
+	}
+	if err := tmpTar.Close(); err != nil {
+		return err
+	}
+	log.Printf("[watcher] release tarball sha256:%x", h.Sum(nil))
+
+	tarFile, err := os.Open(tmpTarPath)
+	if err != nil {
+		return err
+	}
+	defer tarFile.Close()
+
+	gzr, err := gzip.NewReader(tarFile)
+	if err != nil {
+		return err
+	}
+	defer gzr.Close()
+
+	tr := tar.NewReader(gzr)
+
+	needed := make(map[string]string, len(targets)*2)
+	for _, t := range targets {
+		needed[t.txtSuffix] = t.txtPath
+		needed[t.xdbSuffix] = t.xdbPath
+	}
+	stageDir, err := os.MkdirTemp(filepath.Dir(w.VersionFile), "ip2region-extract-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stageDir)
+	stageFiles := make(map[string]string, len(needed))
+	for suffix, destPath := range needed {
+		stageFiles[suffix] = filepath.Join(stageDir, filepath.Base(destPath))
+	}
+
+	written := make(map[string]bool, len(needed))
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+
+		name := strings.TrimPrefix(hdr.Name, "./")
+		for suffix := range needed {
+			if !strings.HasSuffix(name, suffix) {
+				continue
+			}
+			if written[suffix] {
+				continue
+			}
+			if err := writeReaderToFile(tr, stageFiles[suffix]); err != nil {
+				return fmt.Errorf("extract %s: %w", suffix, err)
+			}
+			written[suffix] = true
+			log.Printf("[watcher] extracted %s -> %s", suffix, stageFiles[suffix])
+			break
+		}
+	}
+
+	if len(written) != len(needed) {
+		missing := make([]string, 0, len(needed)-len(written))
+		for suffix := range needed {
+			if !written[suffix] {
+				missing = append(missing, suffix)
+			}
+		}
+		sort.Strings(missing)
+		return fmt.Errorf("release tarball missing required files: %s", strings.Join(missing, ", "))
+	}
+
+	for suffix, destPath := range needed {
+		srcPath := stageFiles[suffix]
+		src, err := os.Open(srcPath)
+		if err != nil {
+			return fmt.Errorf("open staged %s: %w", suffix, err)
+		}
+		if err := writeReaderToFile(src, destPath); err != nil {
+			src.Close()
+			return fmt.Errorf("install %s: %w", suffix, err)
+		}
+		src.Close()
+		log.Printf("[watcher] installed %s -> %s", suffix, destPath)
+	}
+
+	return nil
+}
+
+func writeReaderToFile(r io.Reader, destPath string) error {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return err
 	}
 
 	tmp := destPath + ".tmp"
@@ -181,12 +389,15 @@ func downloadFile(hc *http.Client, url, destPath string) error {
 		return err
 	}
 	h := sha256.New()
-	if _, err = io.Copy(io.MultiWriter(f, h), resp.Body); err != nil {
+	if _, err = io.Copy(io.MultiWriter(f, h), r); err != nil {
 		f.Close()
 		os.Remove(tmp)
 		return err
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
 	log.Printf("[watcher] %s sha256:%x", filepath.Base(destPath), h.Sum(nil))
 	return os.Rename(tmp, destPath)
 }

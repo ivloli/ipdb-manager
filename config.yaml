@@ -4,17 +4,18 @@ nacos:
   namespace: ""
   group:     "subnet_mapping"
   data_id:   "subnet_map"
+  data_id_v6: "subnet_map_v6"
 
 ip2region:
   dir:           "data/ip2region"                           # 存放 .version 文件，相对于运行目录（项目根）
   txt_path:      "data/ip2region/ipv4_source.txt"
   xdb_path:      "data/ip2region/ip2region_v4.xdb"
+  txt_v6_path:   "data/ip2region/ipv6_source.txt"
+  xdb_v6_path:   "data/ip2region/ip2region_v6.xdb"
   poll_interval: "1h"
   github_token:  "${GITHUB_TOKEN}"                          # 可选；不设则匿名限速 60次/小时
-  # 以下三个地址不填则使用默认值，地址变化时直接改配置重启即可
+  # 以下地址不填则使用默认值，地址变化时直接改配置重启即可
   releases_url:     "https://api.github.com/repos/lionsoul2014/ip2region/releases/latest"
-  txt_download_url: "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ipv4_source.txt"
-  xdb_download_url: "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb"
 
 api:
   listen: ":9090"

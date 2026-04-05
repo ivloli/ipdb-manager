@@ -53,17 +53,18 @@ func main() {
 	}
 
 	w := &watcher.VersionWatcher{
-		TXTPath:      cfg.IP2Region.TXTPath,
-		XDBPath:      cfg.IP2Region.XDBPath,
-		VersionFile:  filepath.Join(cfg.IP2Region.Dir, ".version"),
-		PollInterval: cfg.IP2Region.PollInterval,
-		GithubToken:  cfg.IP2Region.GithubToken,
-		ReleasesURL:  cfg.IP2Region.ReleasesURL,
-		TXTDownURL:   cfg.IP2Region.TXTDownURL,
-		XDBDownURL:   cfg.IP2Region.XDBDownURL,
-		NacosClient:  nacosClient,
-		NacosGroup:   cfg.Nacos.Group,
-		NacosDataID:  cfg.Nacos.DataID,
+		TXTPath:       cfg.IP2Region.TXTPath,
+		XDBPath:       cfg.IP2Region.XDBPath,
+		TXTPathV6:     cfg.IP2Region.TXTPathV6,
+		XDBPathV6:     cfg.IP2Region.XDBPathV6,
+		VersionFile:   filepath.Join(cfg.IP2Region.Dir, ".version"),
+		PollInterval:  cfg.IP2Region.PollInterval,
+		GithubToken:   cfg.IP2Region.GithubToken,
+		ReleasesURL:   cfg.IP2Region.ReleasesURL,
+		NacosClient:   nacosClient,
+		NacosGroup:    cfg.Nacos.Group,
+		NacosDataID:   cfg.Nacos.DataID,
+		NacosDataIDV6: cfg.Nacos.DataIDV6,
 	}
 
 	log.Printf("ipdb-manager starting (poll_interval=%s, nacos=%s)",
