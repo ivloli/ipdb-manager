@@ -1,0 +1,18 @@
+[Unit]
+Description=IPDB Manager (ip2region -> Nacos sync)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ipdb-manager -config /etc/ipdb-manager/config.yaml
+WorkingDirectory=/var/lib/ipdb-manager
+Restart=on-failure
+RestartSec=10s
+EnvironmentFile=-/etc/ipdb-manager/env
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ipdb-manager
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,91 @@
+.PHONY: all build tidy install uninstall start stop restart status package \
+	prepare-release build-release release-package release-checksum
+
+APP_NAME := ipdb-manager
+BIN_DIR := bin
+BIN_PATH := $(BIN_DIR)/$(APP_NAME)
+TARGET_OS ?= linux
+TARGET_ARCH ?= amd64
+RELEASE_TAG ?= $(shell git describe --always --dirty --tags 2>/dev/null || date +%Y%m%d%H%M%S)
+RELEASE_DIR := release
+RELEASE_NAME := $(APP_NAME)-offline-$(TARGET_OS)-$(TARGET_ARCH)-$(RELEASE_TAG)
+RELEASE_PATH := $(RELEASE_DIR)/$(RELEASE_NAME)
+RELEASE_BIN := $(RELEASE_PATH)/$(APP_NAME)
+RELEASE_TAR := $(RELEASE_NAME).tar.gz
+
+PREFIX ?= /usr/local
+INSTALL_BIN := $(PREFIX)/bin/$(APP_NAME)
+ETC_DIR ?= /etc/ipdb-manager
+DATA_DIR ?= /var/lib/ipdb-manager/ip2region
+SERVICE_DIR ?= /etc/systemd/system
+
+all: build
+
+build:
+	install -d -m 755 $(BIN_DIR)
+	GOWORK=off go build -o $(BIN_PATH) .
+	@echo "Built $(BIN_PATH)"
+
+tidy:
+	GOWORK=off go mod tidy
+
+install:
+	@set -e; \
+	src_bin=""; \
+	if [ -f "$(BIN_PATH)" ]; then \
+		src_bin="$(BIN_PATH)"; \
+	elif [ -f "$(APP_NAME)" ]; then \
+		src_bin="$(APP_NAME)"; \
+	else \
+		$(MAKE) build; \
+		src_bin="$(BIN_PATH)"; \
+	fi; \
+	install -m 755 "$$src_bin" $(INSTALL_BIN)
+	install -d -m 755 $(ETC_DIR)
+	install -d -m 755 $(DATA_DIR)
+	[ -f $(ETC_DIR)/config.yaml ] || install -m 644 config.prod.yaml $(ETC_DIR)/config.yaml
+	[ -f $(ETC_DIR)/env ] || install -m 600 /dev/null $(ETC_DIR)/env
+	install -m 644 ipdb-manager.service $(SERVICE_DIR)/ipdb-manager.service
+	systemctl daemon-reload
+	systemctl enable ipdb-manager
+	@echo "Installed $(APP_NAME). Edit $(ETC_DIR)/config.yaml and $(ETC_DIR)/env then start service."
+
+uninstall:
+	systemctl stop ipdb-manager 2>/dev/null || true
+	systemctl disable ipdb-manager 2>/dev/null || true
+	rm -f $(SERVICE_DIR)/ipdb-manager.service $(INSTALL_BIN)
+	systemctl daemon-reload
+
+start:
+	systemctl start ipdb-manager
+
+stop:
+	systemctl stop ipdb-manager
+
+restart:
+	systemctl restart ipdb-manager
+
+status:
+	systemctl status ipdb-manager
+
+package:
+	tar -czf $(APP_NAME)-standalone.tar.gz Makefile go.mod go.sum main.go builder config syncer watcher config.prod.yaml config.yaml.example ipdb-manager.service README.md
+	@echo "Created $(APP_NAME)-standalone.tar.gz"
+
+prepare-release:
+	install -d -m 755 $(RELEASE_PATH)
+
+build-release: prepare-release
+	GOWORK=off CGO_ENABLED=0 GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) go build -o $(RELEASE_BIN) .
+	install -m 644 config.prod.yaml $(RELEASE_PATH)/config.prod.yaml
+	install -m 644 ipdb-manager.service $(RELEASE_PATH)/ipdb-manager.service
+	install -m 644 Makefile $(RELEASE_PATH)/Makefile
+	install -m 644 README.md $(RELEASE_PATH)/README.md
+	@echo "Prepared release directory: $(RELEASE_PATH)"
+
+release-package: build-release
+	COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 tar --no-xattrs -czf $(RELEASE_TAR) -C $(RELEASE_DIR) $(RELEASE_NAME)
+	@echo "Created $(RELEASE_TAR)"
+
+release-checksum: release-package
+	shasum -a 256 $(RELEASE_TAR)

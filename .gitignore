@@ -1,0 +1,5 @@
+bin/
+release/
+*.tar.gz
+ip2region_v4.xdb
+ipv4_source.txt
