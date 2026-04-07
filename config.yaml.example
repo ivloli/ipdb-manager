@@ -6,15 +6,22 @@ nacos:
   data_id_v6: "subnet_map_v6"   # Nacos config data ID for IPv6
 
 ip2region:
-  dir:           "/data/ip2region"                          # local data directory (stores .version file)
+  dir:           "/data/ip2region"                          # local data directory (stores local release marker files)
   txt_path:      "/data/ip2region/ipv4_source.txt"          # extracted from release tarball
   xdb_path:      "/data/ip2region/ip2region_v4.xdb"         # extracted from release tarball
   txt_v6_path:   "/data/ip2region/ipv6_source.txt"          # extracted from release tarball
   xdb_v6_path:   "/data/ip2region/ip2region_v6.xdb"         # extracted from release tarball
-  poll_interval: "1h"                                       # how often to check GitHub for a new release
+  poll_interval: "1h"                                       # compatible poll mode; ignored when scheduler.cron is set
   github_token:  "${GITHUB_TOKEN}"                          # optional; avoids anonymous API rate limit (60 req/h)
   releases_url:  "https://api.github.com/repos/lionsoul2014/ip2region/releases/latest"
 
 api:
   listen: ":9090"
   token:  "${IPDB_MANAGER_API_TOKEN}"
+
+scheduler:
+  cron: "" # example: "0 2 * * *" (Asia/Shanghai)
+
+local_state:
+  upstream_release_tag_file: "/data/ip2region/.upstream_release_tag"
+  legacy_version_file: "/data/ip2region/.version"

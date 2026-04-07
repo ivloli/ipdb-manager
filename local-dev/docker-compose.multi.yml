@@ -1,0 +1,82 @@
+services:
+  nacos-cn:
+    image: nacos/nacos-server:v3.1.1
+    container_name: ipdb-nacos-cn
+    environment:
+      - MODE=standalone
+      - NACOS_AUTH_ENABLE=false
+      - NACOS_AUTH_TOKEN=SWNkWW1wSkxCd0RGc2xqQm5vV0RDN1l2YUhSaE5wM1k=
+      - NACOS_AUTH_IDENTITY_KEY=local-dev
+      - NACOS_AUTH_IDENTITY_VALUE=local-dev
+      - JVM_XMS=256m
+      - JVM_XMX=256m
+      - JVM_XMN=128m
+    ports:
+      - "18080:8080"
+      - "18848:8848"
+      - "19848:9848"
+      - "19849:9849"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8080/v3/console/server/state >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  nacos-sg:
+    image: nacos/nacos-server:v3.1.1
+    container_name: ipdb-nacos-sg
+    environment:
+      - MODE=standalone
+      - NACOS_AUTH_ENABLE=false
+      - NACOS_AUTH_TOKEN=SWNkWW1wSkxCd0RGc2xqQm5vV0RDN1l2YUhSaE5wM1k=
+      - NACOS_AUTH_IDENTITY_KEY=local-dev
+      - NACOS_AUTH_IDENTITY_VALUE=local-dev
+      - JVM_XMS=256m
+      - JVM_XMX=256m
+      - JVM_XMN=128m
+    ports:
+      - "28080:8080"
+      - "28848:8848"
+      - "29848:9848"
+      - "29849:9849"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8080/v3/console/server/state >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  jfrog-cn:
+    image: releases-docker.jfrog.io/jfrog/artifactory-oss:7.77.5
+    container_name: ipdb-jfrog-cn
+    profiles: ["artifact"]
+    ports:
+      - "18081:8081"
+      - "18082:8082"
+    volumes:
+      - ./local-dev/jfrog/cn/master.key:/opt/jfrog/artifactory/var/etc/security/master.key:ro
+    environment:
+      - JF_SHARED_NODE_IP=127.0.0.1
+      - JF_SHARED_NODE_ID=art-cn
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8082/router/api/v1/system/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 30
+
+  jfrog-sg:
+    image: releases-docker.jfrog.io/jfrog/artifactory-oss:7.77.5
+    container_name: ipdb-jfrog-sg
+    profiles: ["artifact"]
+    ports:
+      - "28081:8081"
+      - "28082:8082"
+    volumes:
+      - ./local-dev/jfrog/sg/master.key:/opt/jfrog/artifactory/var/etc/security/master.key:ro
+    environment:
+      - JF_SHARED_NODE_IP=127.0.0.1
+      - JF_SHARED_NODE_ID=art-sg
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8082/router/api/v1/system/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 30

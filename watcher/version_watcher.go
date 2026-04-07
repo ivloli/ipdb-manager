@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lionsoul2014/ip2region/binding/golang/xdb"
@@ -29,7 +30,8 @@ type VersionWatcher struct {
 	XDBPath       string
 	TXTPathV6     string
 	XDBPathV6     string
-	VersionFile   string // persisted local version tag, e.g. /data/ip2region/.version
+	VersionFile   string // persisted local upstream release tag
+	LegacyVersion string // old local version file path for compatibility migration
 	PollInterval  time.Duration
 	GithubToken   string // optional; prevents hitting the 60 req/h anonymous limit
 	ReleasesURL   string
@@ -37,6 +39,8 @@ type VersionWatcher struct {
 	NacosGroup    string
 	NacosDataID   string
 	NacosDataIDV6 string
+
+	mu sync.Mutex
 }
 
 type syncTarget struct {
@@ -56,19 +60,58 @@ type githubRelease struct {
 
 // Start checks once on startup, then polls on PollInterval. Blocks forever.
 func (w *VersionWatcher) Start() {
-	if err := w.checkAndUpdate(); err != nil {
+	if err := w.CheckAndUpdate("startup"); err != nil {
 		log.Printf("[watcher] startup check failed: %v", err)
 	}
 	ticker := time.NewTicker(w.PollInterval)
 	defer ticker.Stop()
 	for range ticker.C {
-		if err := w.checkAndUpdate(); err != nil {
+		if err := w.CheckAndUpdate("scheduled"); err != nil {
 			log.Printf("[watcher] check failed: %v", err)
 		}
 	}
 }
 
-func (w *VersionWatcher) checkAndUpdate() error {
+// CheckAndUpdate executes one reconcile cycle.
+func (w *VersionWatcher) CheckAndUpdate(trigger string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.checkAndUpdateLocked(trigger)
+}
+
+// TryCheckAndUpdate executes one reconcile cycle if no other run is active.
+// Returns false,nil when another run is already in progress.
+func (w *VersionWatcher) TryCheckAndUpdate(trigger string) (bool, error) {
+	if !w.mu.TryLock() {
+		return false, nil
+	}
+	defer w.mu.Unlock()
+	return true, w.checkAndUpdateLocked(trigger)
+}
+
+// TryStartBackground starts one reconcile run in background if idle.
+func (w *VersionWatcher) TryStartBackground(trigger string) bool {
+	if !w.mu.TryLock() {
+		return false
+	}
+	go func() {
+		defer w.mu.Unlock()
+		if err := w.checkAndUpdateLocked(trigger); err != nil {
+			log.Printf("[watcher] reconcile trigger=%s failed: %v", trigger, err)
+		}
+	}()
+	return true
+}
+
+func (w *VersionWatcher) checkAndUpdateLocked(trigger string) error {
+	if trigger == "" {
+		trigger = "unknown"
+	}
+	if err := w.migrateLegacyVersionFile(); err != nil {
+		return fmt.Errorf("prepare local release tag file: %w", err)
+	}
+	log.Printf("[watcher] reconcile trigger=%s", trigger)
+
 	httpClient := &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
@@ -142,6 +185,37 @@ func (w *VersionWatcher) checkAndUpdate() error {
 		return err
 	}
 	log.Printf("[watcher] missing data sync complete at version: %s", latestTag)
+	return nil
+}
+
+func (w *VersionWatcher) migrateLegacyVersionFile() error {
+	if w.VersionFile == "" {
+		return fmt.Errorf("version file path is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(w.VersionFile), 0755); err != nil {
+		return err
+	}
+	if _, err := os.Stat(w.VersionFile); err == nil {
+		return nil
+	}
+	if w.LegacyVersion == "" || w.LegacyVersion == w.VersionFile {
+		return nil
+	}
+	data, err := os.ReadFile(w.LegacyVersion)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	tag := strings.TrimSpace(string(data))
+	if tag == "" {
+		return nil
+	}
+	if err := os.WriteFile(w.VersionFile, []byte(tag+"\n"), 0644); err != nil {
+		return err
+	}
+	log.Printf("[watcher] migrated legacy release tag file %s -> %s", w.LegacyVersion, w.VersionFile)
 	return nil
 }
 

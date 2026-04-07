@@ -7,12 +7,12 @@ nacos:
   data_id_v6: "subnet_map_v6"
 
 ip2region:
-  dir:           "data/ip2region"                           # 存放 .version 文件，相对于运行目录（项目根）
+  dir:           "data/ip2region"                           # 存放本地状态文件，相对于运行目录（项目根）
   txt_path:      "data/ip2region/ipv4_source.txt"
   xdb_path:      "data/ip2region/ip2region_v4.xdb"
   txt_v6_path:   "data/ip2region/ipv6_source.txt"
   xdb_v6_path:   "data/ip2region/ip2region_v6.xdb"
-  poll_interval: "1h"
+  poll_interval: "1h"                                       # 兼容模式使用；若设置 scheduler.cron 则忽略
   github_token:  "${GITHUB_TOKEN}"                          # 可选；不设则匿名限速 60次/小时
   # 以下地址不填则使用默认值，地址变化时直接改配置重启即可
   releases_url:     "https://api.github.com/repos/lionsoul2014/ip2region/releases/latest"
@@ -20,3 +20,10 @@ ip2region:
 api:
   listen: ":9090"
   token:  ""
+
+scheduler:
+  cron: "" # 例: "0 2 * * *" (Asia/Shanghai)
+
+local_state:
+  upstream_release_tag_file: "data/ip2region/.upstream_release_tag"
+  legacy_version_file: "data/ip2region/.version"

@@ -9,9 +9,12 @@ import (
 )
 
 type Config struct {
-	Nacos     NacosConfig     `yaml:"nacos"`
-	IP2Region IP2RegionConfig `yaml:"ip2region"`
-	API       APIConfig       `yaml:"api"`
+	Nacos         NacosConfig          `yaml:"nacos"`
+	IP2Region     IP2RegionConfig      `yaml:"ip2region"`
+	API           APIConfig            `yaml:"api"`
+	Scheduler     SchedulerConfig      `yaml:"scheduler"`
+	LocalState    LocalStateConfig     `yaml:"local_state"`
+	ArtifactRepos []ArtifactRepoConfig `yaml:"artifact_repos"`
 }
 
 type NacosConfig struct {
@@ -38,6 +41,30 @@ type IP2RegionConfig struct {
 type APIConfig struct {
 	Listen string `yaml:"listen"`
 	Token  string `yaml:"token"`
+}
+
+type SchedulerConfig struct {
+	Cron string `yaml:"cron"`
+}
+
+type LocalStateConfig struct {
+	UpstreamReleaseTagFile string `yaml:"upstream_release_tag_file"`
+	LegacyVersionFile      string `yaml:"legacy_version_file"`
+}
+
+type ArtifactRepoConfig struct {
+	ID      string             `yaml:"id"`
+	Type    string             `yaml:"type"`
+	BaseURL string             `yaml:"base_url"`
+	Repo    string             `yaml:"repo"`
+	Enabled bool               `yaml:"enabled"`
+	Auth    ArtifactAuthConfig `yaml:"auth"`
+}
+
+type ArtifactAuthConfig struct {
+	TokenRef    string `yaml:"token_ref"`
+	UsernameRef string `yaml:"username_ref"`
+	PasswordRef string `yaml:"password_ref"`
 }
 
 // Load reads a YAML config file and expands environment variables.
@@ -89,6 +116,38 @@ func (c *Config) validate() error {
 	}
 	if c.IP2Region.ReleasesURL == "" {
 		c.IP2Region.ReleasesURL = "https://api.github.com/repos/lionsoul2014/ip2region/releases/latest"
+	}
+	if c.LocalState.UpstreamReleaseTagFile == "" {
+		c.LocalState.UpstreamReleaseTagFile = c.IP2Region.Dir + "/.upstream_release_tag"
+	}
+	if c.LocalState.LegacyVersionFile == "" {
+		c.LocalState.LegacyVersionFile = c.IP2Region.Dir + "/.version"
+	}
+	if c.API.Listen == "" {
+		c.API.Listen = ":9090"
+	}
+	seenRepoID := map[string]struct{}{}
+	for i := range c.ArtifactRepos {
+		r := &c.ArtifactRepos[i]
+		if r.ID == "" {
+			return fmt.Errorf("artifact_repos[%d].id is required", i)
+		}
+		if _, ok := seenRepoID[r.ID]; ok {
+			return fmt.Errorf("artifact_repos[%d].id duplicated: %s", i, r.ID)
+		}
+		seenRepoID[r.ID] = struct{}{}
+		if r.Type == "" {
+			return fmt.Errorf("artifact_repos[%d].type is required", i)
+		}
+		if r.BaseURL == "" {
+			return fmt.Errorf("artifact_repos[%d].base_url is required", i)
+		}
+		if r.Repo == "" {
+			return fmt.Errorf("artifact_repos[%d].repo is required", i)
+		}
+		if r.Auth.TokenRef == "" && (r.Auth.UsernameRef == "" || r.Auth.PasswordRef == "") {
+			return fmt.Errorf("artifact_repos[%d].auth requires token_ref or username_ref+password_ref", i)
+		}
 	}
 	return nil
 }

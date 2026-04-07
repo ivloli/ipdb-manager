@@ -1,0 +1,29 @@
+nacos:
+  addr: "127.0.0.1:18848"
+  namespace: ""
+  group: "subnet_mapping"
+  data_id: "subnet_map"
+  data_id_v6: "subnet_map_v6"
+  username: ""
+  password: ""
+
+ip2region:
+  dir: "data/ip2region"
+  txt_path: "data/ip2region/ipv4_source.txt"
+  xdb_path: "data/ip2region/ip2region_v4.xdb"
+  txt_v6_path: "data/ip2region/ipv6_source.txt"
+  xdb_v6_path: "data/ip2region/ip2region_v6.xdb"
+  poll_interval: "1h"
+  github_token: "${GITHUB_TOKEN}"
+  releases_url: "https://api.github.com/repos/lionsoul2014/ip2region/releases/latest"
+
+api:
+  listen: ":9090"
+  token: "local-dev-token"
+
+scheduler:
+  cron: ""
+
+local_state:
+  upstream_release_tag_file: "data/ip2region/.upstream_release_tag"
+  legacy_version_file: "data/ip2region/.version"
