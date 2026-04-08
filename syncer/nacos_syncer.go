@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/lionsoul2014/ip2region/binding/golang/xdb"
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
@@ -20,9 +21,16 @@ type Syncer struct {
 	NacosClient config_client.IConfigClient
 	NacosGroup  string
 	NacosDataID string
+	MetaDataID  string
 	TXTPath     string
 	XDBPath     string
 	XDBVersion  *xdb.Version
+	VersionTag  string
+}
+
+type subnetMapMeta struct {
+	Version   string `json:"version"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // Sync runs one full diff-and-update cycle:
@@ -32,6 +40,19 @@ type Syncer struct {
 //  4. Add keys present in ip2regionMap but missing from nacosMap.
 //  5. Publish merged map to Nacos (only when there are actual changes).
 func (s *Syncer) Sync() error {
+	versionUpToDate := false
+	if strings.TrimSpace(s.VersionTag) != "" {
+		ok, err := s.isSubnetVersionUpToDate()
+		if err != nil {
+			return fmt.Errorf("check subnet meta version: %w", err)
+		}
+		if ok {
+			log.Printf("[syncer] fast path hit: subnet meta already at version %s, skip map rebuild", s.VersionTag)
+			return nil
+		}
+		versionUpToDate = false
+	}
+
 	// Step 1 — build from TXT
 	ip2regionMap, err := builder.BuildSubnetMap(s.TXTPath)
 	if err != nil {
@@ -45,6 +66,16 @@ func (s *Syncer) Sync() error {
 		return fmt.Errorf("load nacos map: %w", err)
 	}
 	log.Printf("[syncer] nacos current: %d entries", len(nacosMap))
+
+	if mapsEqual(ip2regionMap, nacosMap) {
+		log.Printf("[syncer] fast path hit: nacos map already matches txt map, skip reverse validation")
+		if strings.TrimSpace(s.VersionTag) != "" && !versionUpToDate {
+			if err := s.publishSubnetVersion(); err != nil {
+				return fmt.Errorf("publish subnet meta version: %w", err)
+			}
+		}
+		return nil
+	}
 
 	// Step 3 — load XDB for reverse validation
 	cBuff, err := xdb.LoadContentFromFile(s.XDBPath)
@@ -99,6 +130,11 @@ func (s *Syncer) Sync() error {
 
 	if removed == 0 && added == 0 {
 		log.Printf("[syncer] no changes detected, skip publish")
+		if strings.TrimSpace(s.VersionTag) != "" && !versionUpToDate {
+			if err := s.publishSubnetVersion(); err != nil {
+				return fmt.Errorf("publish subnet meta version: %w", err)
+			}
+		}
 		return nil
 	}
 
@@ -118,8 +154,84 @@ func (s *Syncer) Sync() error {
 	if !ok {
 		return fmt.Errorf("publish nacos config returned false")
 	}
+	if strings.TrimSpace(s.VersionTag) != "" {
+		if err := s.publishSubnetVersion(); err != nil {
+			return fmt.Errorf("publish subnet meta version: %w", err)
+		}
+	}
 	log.Printf("[syncer] published to nacos: %d total entries (+%d -%d)", len(nacosMap), added, removed)
 	return nil
+}
+
+func (s *Syncer) isSubnetVersionUpToDate() (bool, error) {
+	metaDataID := s.metaDataID()
+	if metaDataID == "" {
+		return false, nil
+	}
+	content, err := s.NacosClient.GetConfig(vo.ConfigParam{DataId: metaDataID, Group: s.NacosGroup})
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "config data not exist") {
+			return false, nil
+		}
+		return false, err
+	}
+	if strings.TrimSpace(content) == "" {
+		return false, nil
+	}
+	var m subnetMapMeta
+	if err := json.Unmarshal([]byte(content), &m); err != nil {
+		return false, nil
+	}
+	return strings.TrimSpace(m.Version) == strings.TrimSpace(s.VersionTag), nil
+}
+
+func (s *Syncer) publishSubnetVersion() error {
+	metaDataID := s.metaDataID()
+	if metaDataID == "" {
+		return nil
+	}
+	payload, err := json.Marshal(subnetMapMeta{
+		Version:   strings.TrimSpace(s.VersionTag),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return err
+	}
+	ok, err := s.NacosClient.PublishConfig(vo.ConfigParam{
+		DataId:  metaDataID,
+		Group:   s.NacosGroup,
+		Content: string(payload),
+	})
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("publish subnet version returned false")
+	}
+	log.Printf("[syncer] published subnet meta: data_id=%s version=%s", metaDataID, s.VersionTag)
+	return nil
+}
+
+func (s *Syncer) metaDataID() string {
+	if strings.TrimSpace(s.MetaDataID) != "" {
+		return strings.TrimSpace(s.MetaDataID)
+	}
+	if strings.TrimSpace(s.NacosDataID) == "" {
+		return ""
+	}
+	return strings.TrimSpace(s.NacosDataID) + "_meta"
+}
+
+func mapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Syncer) loadNacosMap() (map[string]string, error) {

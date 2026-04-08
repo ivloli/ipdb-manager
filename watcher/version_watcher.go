@@ -145,7 +145,7 @@ func (w *VersionWatcher) checkAndUpdateLocked(trigger string) error {
 		if err := w.publishIP2RegionMeta(targets, latestTag); err != nil {
 			return err
 		}
-		return w.runSyncTargets(targets)
+		return w.runSyncTargets(targets, "")
 	}
 
 	versionChanged := localTag != latestTag
@@ -157,7 +157,14 @@ func (w *VersionWatcher) checkAndUpdateLocked(trigger string) error {
 	}
 
 	if !versionChanged && len(missingTargets) == 0 {
-		log.Printf("[watcher] already at latest (%s), nothing to do", latestTag)
+		log.Printf("[watcher] already at latest (%s), running reconcile for nacos meta and subnet maps", latestTag)
+		if err := w.publishIP2RegionMeta(targets, latestTag); err != nil {
+			return err
+		}
+		if err := w.runSyncTargets(targets, latestTag); err != nil {
+			return err
+		}
+		log.Printf("[watcher] reconcile complete at latest version: %s", latestTag)
 		return nil
 	}
 
@@ -172,7 +179,7 @@ func (w *VersionWatcher) checkAndUpdateLocked(trigger string) error {
 			return err
 		}
 
-		if err := w.runSyncTargets(targets); err != nil {
+		if err := w.runSyncTargets(targets, latestTag); err != nil {
 			return err
 		}
 
@@ -200,7 +207,7 @@ func (w *VersionWatcher) checkAndUpdateLocked(trigger string) error {
 		return err
 	}
 
-	if err := w.runSyncTargets(missingTargets); err != nil {
+	if err := w.runSyncTargets(missingTargets, latestTag); err != nil {
 		return err
 	}
 	log.Printf("[watcher] missing data sync complete at version: %s", latestTag)
@@ -300,16 +307,16 @@ func targetFilesMissing(t syncTarget) bool {
 	return false
 }
 
-func (w *VersionWatcher) runSyncTargets(targets []syncTarget) error {
+func (w *VersionWatcher) runSyncTargets(targets []syncTarget, versionTag string) error {
 	for _, t := range targets {
-		if err := w.runSyncOne(t); err != nil {
+		if err := w.runSyncOne(t, versionTag); err != nil {
 			return fmt.Errorf("sync %s nacos: %w", t.name, err)
 		}
 	}
 	return nil
 }
 
-func (w *VersionWatcher) runSyncOne(t syncTarget) error {
+func (w *VersionWatcher) runSyncOne(t syncTarget, versionTag string) error {
 	if _, err := os.Stat(t.txtPath); os.IsNotExist(err) {
 		log.Printf("[watcher] skip sync for %s: txt not found", t.dataID)
 		return nil
@@ -323,9 +330,11 @@ func (w *VersionWatcher) runSyncOne(t syncTarget) error {
 		NacosClient: w.NacosClient,
 		NacosGroup:  w.NacosGroup,
 		NacosDataID: t.dataID,
+		MetaDataID:  t.dataID + "_meta",
 		TXTPath:     t.txtPath,
 		XDBPath:     t.xdbPath,
 		XDBVersion:  t.version,
+		VersionTag:  versionTag,
 	}
 	if err := s.Sync(); err != nil {
 		return fmt.Errorf("sync nacos: %w", err)
