@@ -15,6 +15,7 @@ type Config struct {
 	Scheduler     SchedulerConfig      `yaml:"scheduler"`
 	LocalState    LocalStateConfig     `yaml:"local_state"`
 	ArtifactRepos []ArtifactRepoConfig `yaml:"artifact_repos"`
+	NacosTargets  []NacosTargetConfig  `yaml:"nacos_targets"`
 }
 
 type NacosConfig struct {
@@ -65,6 +66,37 @@ type ArtifactAuthConfig struct {
 	TokenRef    string `yaml:"token_ref"`
 	UsernameRef string `yaml:"username_ref"`
 	PasswordRef string `yaml:"password_ref"`
+}
+
+type NacosTargetConfig struct {
+	ID                    string                   `yaml:"id"`
+	ServerAddr            string                   `yaml:"server_addr"`
+	Namespace             string                   `yaml:"namespace"`
+	Auth                  NacosTargetAuthConfig    `yaml:"auth"`
+	Publish               NacosTargetPublishConfig `yaml:"publish"`
+	ArtifactRepoID        string                   `yaml:"artifact_repo_id"`
+	ArtifactPathTemplates ArtifactPathTemplates    `yaml:"artifact_path_templates"`
+	Enabled               bool                     `yaml:"enabled"`
+}
+
+type NacosTargetAuthConfig struct {
+	UsernameRef string `yaml:"username_ref"`
+	PasswordRef string `yaml:"password_ref"`
+}
+
+type NacosTargetPublishConfig struct {
+	V4 NacosPublishMetaRef `yaml:"v4"`
+	V6 NacosPublishMetaRef `yaml:"v6"`
+}
+
+type NacosPublishMetaRef struct {
+	Group  string `yaml:"group"`
+	DataID string `yaml:"data_id"`
+}
+
+type ArtifactPathTemplates struct {
+	V4 string `yaml:"v4"`
+	V6 string `yaml:"v6"`
 }
 
 // Load reads a YAML config file and expands environment variables.
@@ -147,6 +179,52 @@ func (c *Config) validate() error {
 		}
 		if r.Auth.TokenRef == "" && (r.Auth.UsernameRef == "" || r.Auth.PasswordRef == "") {
 			return fmt.Errorf("artifact_repos[%d].auth requires token_ref or username_ref+password_ref", i)
+		}
+	}
+
+	if len(c.NacosTargets) == 0 {
+		return nil
+	}
+
+	repos := make(map[string]ArtifactRepoConfig, len(c.ArtifactRepos))
+	for _, r := range c.ArtifactRepos {
+		repos[r.ID] = r
+	}
+
+	seenTargetID := map[string]struct{}{}
+	for i := range c.NacosTargets {
+		t := &c.NacosTargets[i]
+		if t.ID == "" {
+			return fmt.Errorf("nacos_targets[%d].id is required", i)
+		}
+		if _, ok := seenTargetID[t.ID]; ok {
+			return fmt.Errorf("nacos_targets[%d].id duplicated: %s", i, t.ID)
+		}
+		seenTargetID[t.ID] = struct{}{}
+		if t.ServerAddr == "" {
+			return fmt.Errorf("nacos_targets[%d].server_addr is required", i)
+		}
+		if t.Auth.UsernameRef == "" || t.Auth.PasswordRef == "" {
+			return fmt.Errorf("nacos_targets[%d].auth requires username_ref+password_ref", i)
+		}
+		if t.ArtifactRepoID == "" {
+			return fmt.Errorf("nacos_targets[%d].artifact_repo_id is required", i)
+		}
+		repo, ok := repos[t.ArtifactRepoID]
+		if !ok {
+			return fmt.Errorf("nacos_targets[%d].artifact_repo_id=%s not found in artifact_repos", i, t.ArtifactRepoID)
+		}
+		if !repo.Enabled {
+			return fmt.Errorf("nacos_targets[%d].artifact_repo_id=%s is disabled", i, t.ArtifactRepoID)
+		}
+		if t.Publish.V4.Group == "" || t.Publish.V4.DataID == "" {
+			return fmt.Errorf("nacos_targets[%d].publish.v4.group/data_id is required", i)
+		}
+		if t.Publish.V6.Group == "" || t.Publish.V6.DataID == "" {
+			return fmt.Errorf("nacos_targets[%d].publish.v6.group/data_id is required", i)
+		}
+		if t.ArtifactPathTemplates.V4 == "" || t.ArtifactPathTemplates.V6 == "" {
+			return fmt.Errorf("nacos_targets[%d].artifact_path_templates.v4/v6 is required", i)
 		}
 	}
 	return nil

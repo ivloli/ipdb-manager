@@ -27,3 +27,35 @@ scheduler:
 local_state:
   upstream_release_tag_file: "data/ip2region/.upstream_release_tag"
   legacy_version_file: "data/ip2region/.version"
+
+# --- Optional: multi-nacos + artifact publish mode ---
+# artifact_repos:
+#   - id: jfrog_cn
+#     type: jfrog
+#     base_url: "https://artifactory.gainetics.io/artifactory"
+#     repo: "observe-generic"
+#     auth:
+#       # use one of token_ref or username_ref/password_ref
+#       username_ref: "JFROG_USER_DNPS"
+#       password_ref: "JFROG_PASS_DNPS"
+#     enabled: true
+#
+# nacos_targets:
+#   - id: cn_prod
+#     server_addr: "127.0.0.1:8848"
+#     namespace: ""
+#     auth:
+#       username_ref: "NACOS_CN_USER"
+#       password_ref: "NACOS_CN_PASS"
+#     publish:
+#       v4:
+#         group: "ip_data_v4"
+#         data_id: "ip2region_meta"
+#       v6:
+#         group: "ip_data_v6"
+#         data_id: "ip2region_meta"
+#     artifact_repo_id: "jfrog_cn"
+#     artifact_path_templates:
+#       v4: "ip2region/{{version}}/ip2region_v4.xdb"
+#       v6: "ip2region/{{version}}/ip2region_v6.xdb"
+#     enabled: true

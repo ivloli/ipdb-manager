@@ -13,13 +13,18 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/lionsoul2014/ip2region/binding/golang/xdb"
+	"github.com/nacos-group/nacos-sdk-go/v2/clients"
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
+	"github.com/nacos-group/nacos-sdk-go/v2/common/constant"
+	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 
+	"ipdb-manager/config"
 	"ipdb-manager/syncer"
 )
 
@@ -39,6 +44,9 @@ type VersionWatcher struct {
 	NacosGroup    string
 	NacosDataID   string
 	NacosDataIDV6 string
+
+	ArtifactRepos []config.ArtifactRepoConfig
+	NacosTargets  []config.NacosTargetConfig
 
 	mu sync.Mutex
 }
@@ -134,6 +142,9 @@ func (w *VersionWatcher) checkAndUpdateLocked(trigger string) error {
 	// manual 模式：跳过下载，直接用现有文件同步 Nacos，版本号保持 manual 不变。
 	if localTag == "manual" {
 		log.Printf("[watcher] manual mode, latest upstream=%s, syncing nacos with existing files...", latestTag)
+		if err := w.publishIP2RegionMeta(targets, latestTag); err != nil {
+			return err
+		}
 		return w.runSyncTargets(targets)
 	}
 
@@ -156,6 +167,10 @@ func (w *VersionWatcher) checkAndUpdateLocked(trigger string) error {
 			return err
 		}
 		log.Printf("[watcher] release files downloaded and extracted")
+
+		if err := w.publishIP2RegionMeta(targets, latestTag); err != nil {
+			return err
+		}
 
 		if err := w.runSyncTargets(targets); err != nil {
 			return err
@@ -181,11 +196,44 @@ func (w *VersionWatcher) checkAndUpdateLocked(trigger string) error {
 	}
 	log.Printf("[watcher] missing release files repaired")
 
+	if err := w.publishIP2RegionMeta(missingTargets, latestTag); err != nil {
+		return err
+	}
+
 	if err := w.runSyncTargets(missingTargets); err != nil {
 		return err
 	}
 	log.Printf("[watcher] missing data sync complete at version: %s", latestTag)
 	return nil
+}
+
+func newNacosConfigClient(addr, namespace, username, password string) (config_client.IConfigClient, error) {
+	host, port := splitHostPort(addr)
+	sc := []constant.ServerConfig{*constant.NewServerConfig(host, port)}
+	cc := *constant.NewClientConfig(
+		constant.WithNamespaceId(namespace),
+		constant.WithTimeoutMs(5000),
+		constant.WithNotLoadCacheAtStart(true),
+		constant.WithLogDir("/tmp/nacos/log"),
+		constant.WithCacheDir("/tmp/nacos/cache"),
+		constant.WithLogLevel("warn"),
+		constant.WithUsername(username),
+		constant.WithPassword(password),
+	)
+	return clients.NewConfigClient(vo.NacosClientParam{ClientConfig: &cc, ServerConfigs: sc})
+}
+
+func splitHostPort(addr string) (host string, port uint64) {
+	port = 8848
+	idx := strings.LastIndex(addr, ":")
+	if idx < 0 {
+		return addr, port
+	}
+	host = addr[:idx]
+	if p, err := strconv.ParseUint(addr[idx+1:], 10, 64); err == nil {
+		port = p
+	}
+	return
 }
 
 func (w *VersionWatcher) migrateLegacyVersionFile() error {

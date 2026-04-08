@@ -68,6 +68,8 @@ func main() {
 		NacosGroup:    cfg.Nacos.Group,
 		NacosDataID:   cfg.Nacos.DataID,
 		NacosDataIDV6: cfg.Nacos.DataIDV6,
+		ArtifactRepos: cfg.ArtifactRepos,
+		NacosTargets:  cfg.NacosTargets,
 	}
 
 	apiServer := &api.Server{
