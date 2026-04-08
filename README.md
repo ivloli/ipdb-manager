@@ -23,7 +23,7 @@ sudo make start
 When `artifact_repos` and `nacos_targets` are configured, each reconcile run will:
 
 1. Upload missing `ip2region_v4.xdb` / `ip2region_v6.xdb` artifacts to target repository.
-2. Publish Nacos `ip2region_meta` (`version/xdb_url/xdb_sha256`) for v4 and v6.
+2. Publish Nacos `ip2region_meta` (`version/xdb_url/xdb_sha256/xdb_auth_user`) for v4 and v6.
 
 Use env files for secrets (references are env var names):
 

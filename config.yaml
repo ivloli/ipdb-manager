@@ -50,7 +50,7 @@ local_state:
 #     publish:
 #       v4:
 #         group: "ip_data_v4"
-#         data_id: "ip2region_meta"
+#         data_id: "ip2region_meta" # payload includes version/xdb_url/xdb_sha256/xdb_auth_user
 #       v6:
 #         group: "ip_data_v6"
 #         data_id: "ip2region_meta"

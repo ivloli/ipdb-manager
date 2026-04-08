@@ -13,11 +13,49 @@ ip2region:
   xdb_path:      "/var/lib/ipdb-manager/ip2region/ip2region_v4.xdb"
   txt_v6_path:   "/var/lib/ipdb-manager/ip2region/ipv6_source.txt"
   xdb_v6_path:   "/var/lib/ipdb-manager/ip2region/ip2region_v6.xdb"
-  poll_interval: "1h"
+  poll_interval: "1h" # used only when scheduler.cron is empty
   github_token:  "${GITHUB_TOKEN}"
-  # 以下地址不填则使用默认值，地址变化时直接改配置重启即可
-  releases_url:  "https://api.github.com/repos/lionsoul2014/ip2region/releases/latest"   # 从 /etc/ipdb-manager/env 注入
+  releases_url:  "https://api.github.com/repos/lionsoul2014/ip2region/releases/latest"
 
 api:
   listen: ":9090"
   token:  "${IPDB_MANAGER_API_TOKEN}"
+
+scheduler:
+  cron: "" # e.g. "*/5 * * * *" (Asia/Shanghai)
+
+local_state:
+  upstream_release_tag_file: "/var/lib/ipdb-manager/ip2region/.upstream_release_tag"
+  legacy_version_file: "/var/lib/ipdb-manager/ip2region/.version"
+
+# Multi-target artifact publish mode (optional).
+artifact_repos:
+  - id: jfrog_cn
+    type: jfrog
+    base_url: "https://artifactory.gainetics.io/artifactory"
+    repo: "observe-generic"
+    auth:
+      # token_ref or username_ref/password_ref
+      username_ref: "${JFROG_USER}"
+      password_ref: "${JFROG_PASS}"
+    enabled: true
+
+nacos_targets:
+  - id: nacos_cn_prod
+    server_addr: "139.159.195.20:8848"
+    namespace: "scloud-prod"
+    auth:
+      username_ref: "${NACOS_USERNAME}"
+      password_ref: "${NACOS_PASSWORD}"
+    publish:
+      v4:
+        group: "ip_data_v4"
+        data_id: "ip2region_meta"
+      v6:
+        group: "ip_data_v6"
+        data_id: "ip2region_meta"
+    artifact_repo_id: "jfrog_cn"
+    artifact_path_templates:
+      v4: "dev-config-central/ip2region/{{version}}/ip2region_v4.xdb"
+      v6: "dev-config-central/ip2region/{{version}}/ip2region_v6.xdb"
+    enabled: true

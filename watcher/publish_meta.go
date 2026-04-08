@@ -22,9 +22,10 @@ import (
 )
 
 type ip2regionMeta struct {
-	Version   string `json:"version"`
-	XDBURL    string `json:"xdb_url"`
-	XDBSHA256 string `json:"xdb_sha256"`
+	Version     string `json:"version"`
+	XDBURL      string `json:"xdb_url"`
+	XDBSHA256   string `json:"xdb_sha256"`
+	XDBAuthUser string `json:"xdb_auth_user,omitempty"`
 }
 
 func (w *VersionWatcher) publishIP2RegionMeta(targets []syncTarget, version string) error {
@@ -68,7 +69,7 @@ func (w *VersionWatcher) publishIP2RegionMeta(targets []syncTarget, version stri
 }
 
 func (w *VersionWatcher) publishOneTarget(targets []syncTarget, version string, nacosTarget config.NacosTargetConfig, repo config.ArtifactRepoConfig) error {
-	repoCreds, err := resolveArtifactCredentials(repo.Auth)
+	repoCreds, authUser, err := resolveArtifactCredentials(repo.Auth)
 	if err != nil {
 		return err
 	}
@@ -90,14 +91,14 @@ func (w *VersionWatcher) publishOneTarget(targets []syncTarget, version string, 
 	}
 
 	for _, st := range targets {
-		if err := publishOneFamily(version, st, nacosTarget, repo, artifactClient, nacosClient); err != nil {
+		if err := publishOneFamily(version, st, nacosTarget, repo, artifactClient, nacosClient, authUser); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func publishOneFamily(version string, st syncTarget, nacosTarget config.NacosTargetConfig, repo config.ArtifactRepoConfig, artifactClient artifact.Client, nacosClient config_client.IConfigClient) error {
+func publishOneFamily(version string, st syncTarget, nacosTarget config.NacosTargetConfig, repo config.ArtifactRepoConfig, artifactClient artifact.Client, nacosClient config_client.IConfigClient, authUser string) error {
 	tpl, ref := selectTargetFamilyConfig(st.name, nacosTarget)
 	if tpl == "" || ref.Group == "" || ref.DataID == "" {
 		return fmt.Errorf("family=%s publish config is incomplete", st.name)
@@ -124,7 +125,7 @@ func publishOneFamily(version string, st syncTarget, nacosTarget config.NacosTar
 		return fmt.Errorf("family=%s sha256: %w", st.name, err)
 	}
 
-	payload := ip2regionMeta{Version: version, XDBURL: artifactURL, XDBSHA256: sha}
+	payload := ip2regionMeta{Version: version, XDBURL: artifactURL, XDBSHA256: sha, XDBAuthUser: authUser}
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("family=%s marshal meta: %w", st.name, err)
@@ -151,20 +152,20 @@ func selectTargetFamilyConfig(family string, t config.NacosTargetConfig) (string
 	return t.ArtifactPathTemplates.V4, t.Publish.V4
 }
 
-func resolveArtifactCredentials(auth config.ArtifactAuthConfig) (artifact.Credentials, error) {
+func resolveArtifactCredentials(auth config.ArtifactAuthConfig) (artifact.Credentials, string, error) {
 	if auth.TokenRef != "" {
 		token := resolveSecret(auth.TokenRef)
 		if token == "" {
-			return artifact.Credentials{}, fmt.Errorf("artifact token env not set: token_ref=%s", auth.TokenRef)
+			return artifact.Credentials{}, "", fmt.Errorf("artifact token env not set: token_ref=%s", auth.TokenRef)
 		}
-		return artifact.Credentials{Token: token}, nil
+		return artifact.Credentials{Token: token}, "", nil
 	}
 	user := resolveSecret(auth.UsernameRef)
 	pass := resolveSecret(auth.PasswordRef)
 	if user == "" || pass == "" {
-		return artifact.Credentials{}, fmt.Errorf("artifact basic auth env not set: username_ref=%s password_ref=%s", auth.UsernameRef, auth.PasswordRef)
+		return artifact.Credentials{}, "", fmt.Errorf("artifact basic auth env not set: username_ref=%s password_ref=%s", auth.UsernameRef, auth.PasswordRef)
 	}
-	return artifact.Credentials{Username: user, Password: pass}, nil
+	return artifact.Credentials{Username: user, Password: pass}, user, nil
 }
 
 func resolveSecret(ref string) string {
