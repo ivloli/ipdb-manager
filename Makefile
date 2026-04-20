@@ -1,4 +1,4 @@
-.PHONY: all build tidy install uninstall start stop restart status package \
+.PHONY: all build test tidy install uninstall start stop restart status package \
 	prepare-release build-release release-package release-checksum
 
 APP_NAME := ipdb-manager
@@ -12,6 +12,7 @@ RELEASE_NAME := $(APP_NAME)-offline-$(TARGET_OS)-$(TARGET_ARCH)-$(RELEASE_TAG)
 RELEASE_PATH := $(RELEASE_DIR)/$(RELEASE_NAME)
 RELEASE_BIN := $(RELEASE_PATH)/$(APP_NAME)
 RELEASE_TAR := $(RELEASE_NAME).tar.gz
+CONFIG_SRC ?= config.yaml
 
 PREFIX ?= /usr/local
 INSTALL_BIN := $(PREFIX)/bin/$(APP_NAME)
@@ -25,6 +26,9 @@ build:
 	install -d -m 755 $(BIN_DIR)
 	GOWORK=off go build -o $(BIN_PATH) .
 	@echo "Built $(BIN_PATH)"
+
+test:
+	GOWORK=off go test ./...
 
 tidy:
 	GOWORK=off go mod tidy
@@ -43,7 +47,7 @@ install:
 	install -m 755 "$$src_bin" $(INSTALL_BIN)
 	install -d -m 755 $(ETC_DIR)
 	install -d -m 755 $(DATA_DIR)
-	[ -f $(ETC_DIR)/config.yaml ] || install -m 644 config.prod.yaml $(ETC_DIR)/config.yaml
+	install -m 644 "$(CONFIG_SRC)" $(ETC_DIR)/config.yaml
 	[ -f $(ETC_DIR)/env ] || install -m 600 /dev/null $(ETC_DIR)/env
 	install -m 644 ipdb-manager.service $(SERVICE_DIR)/ipdb-manager.service
 	systemctl daemon-reload
@@ -69,7 +73,7 @@ status:
 	systemctl status ipdb-manager
 
 package:
-	tar -czf $(APP_NAME)-standalone.tar.gz Makefile go.mod go.sum main.go builder config syncer watcher config.prod.yaml config.yaml.example ipdb-manager.service README.md
+	tar -czf $(APP_NAME)-standalone.tar.gz Makefile go.mod go.sum main.go builder config syncer watcher config.yaml.example ipdb-manager.service README.md
 	@echo "Created $(APP_NAME)-standalone.tar.gz"
 
 prepare-release:
@@ -77,7 +81,8 @@ prepare-release:
 
 build-release: prepare-release
 	GOWORK=off CGO_ENABLED=0 GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) go build -o $(RELEASE_BIN) .
-	install -m 644 config.prod.yaml $(RELEASE_PATH)/config.prod.yaml
+	install -m 644 "$(CONFIG_SRC)" $(RELEASE_PATH)/config.yaml
+	@if [ -f "config.yaml.example" ]; then install -m 644 config.yaml.example $(RELEASE_PATH)/config.yaml.example; fi
 	install -m 644 ipdb-manager.service $(RELEASE_PATH)/ipdb-manager.service
 	install -m 644 Makefile $(RELEASE_PATH)/Makefile
 	install -m 644 README.md $(RELEASE_PATH)/README.md

@@ -37,6 +37,8 @@ make release-package
 make release-checksum
 ```
 
+If Jenkins supplies a custom config, pass `CONFIG_SRC=/path/to/config.yaml` to `make release-package` and `make install`.
+
 You can also set your own tag:
 
 ```bash
