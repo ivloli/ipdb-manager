@@ -44,3 +44,15 @@ You can also set your own tag:
 ```bash
 make release-package RELEASE_TAG=v20260405-r1
 ```
+
+## Offline Deploy
+
+- Script: `batch_deploy_ipdb_manager_offline.sh`
+- Config: `deploy_ipdb_manager.mk`
+- The deploy workdir on target hosts is `/tmp/ipdb-manager-deploy`.
+
+## Jenkins
+
+- Pipeline: `Jenkinsfile`
+- Parameter script: `jenkins/rollback_artifact_choices.groovy`
+- Jenkins notes: `jenkins/README.md`
