@@ -14,6 +14,8 @@ This folder contains all Jenkins-related files for `ipdb-manager`.
 
 ## Config flow
 
+The Artifactory folder for rollback artifacts is `prod-ipdb-xdb-manager`.
+
 For `Release`:
 
 1. Jenkins receives `CONFIG_YAML`.

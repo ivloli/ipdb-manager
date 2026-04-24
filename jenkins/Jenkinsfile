@@ -64,7 +64,7 @@ pipeline {
 
     SSH_CRED_ID = 'ipdb-manager-ssh'
 
-    JFROG_REPO_URL = 'https://artifactory.gainetics.io/artifactory/observe-dnps/prod-ipdb-manager'
+    JFROG_REPO_URL = 'https://artifactory.gainetics.io/artifactory/observe-dnps/prod-ipdb-xdb-manager'
     JFROG_USER     = 'dnps'
     JFROG_PASS     = 'SXKvkwRICe743VPhTkKIbA=='
   }

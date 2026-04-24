@@ -53,6 +53,6 @@ make release-package RELEASE_TAG=v20260405-r1
 
 ## Jenkins
 
-- Pipeline: `Jenkinsfile`
+- Pipeline: `jenkins/Jenkinsfile`
 - Parameter script: `jenkins/rollback_artifact_choices.groovy`
 - Jenkins notes: `jenkins/README.md`
