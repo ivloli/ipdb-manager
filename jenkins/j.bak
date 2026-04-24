@@ -1,0 +1,357 @@
+pipeline {
+  agent any
+  options {
+    buildDiscarder(logRotator(numToKeepStr: '15'))
+    disableConcurrentBuilds()
+    timestamps()
+  }
+  parameters {
+    choice(name: 'ACTION', choices: ['Release', 'Rollback'], description: 'Deploy mode： Relase发版，Rollback 回滚')
+    gitParameter(
+      name: 'GIT_REF',
+      type: 'PT_BRANCH_TAG',
+      defaultValue: 'main',
+      branchFilter: 'origin/(.*)',
+      sortMode: 'DESCENDING_SMART',
+      selectedValue: 'TOP',
+      useRepository: 'git@gitlab.gainetics.io:backend-cdn/dnps/cloud-end/sentinel.git',
+      quickFilterEnabled: true
+    )
+    extendedChoice(
+      name: 'TARGET_IP',
+      description: '选择部署的节点IP（可多选）',
+      type: 'PT_MULTI_SELECT',
+      value: '8.163.67.198,8.163.43.38,101.37.193.206,101.37.195.65,118.190.152.160,47.104.13.65,8.156.94.201,8.156.94.192,39.107.68.250,39.107.70.115,47.103.219.65,47.103.218.137,8.148.5.57,8.162.7.114',
+      defaultValue: '8.163.67.198',
+      multiSelectDelimiter: ',',
+      visibleItemCount: 5
+    )
+  }
+  environment {
+    APP_NAME = "${env.APP_NAME ?: 'httpdns'}"
+    GIT_CREDENTIALS_ID = 'deploy'
+    REPOSITORY_URL     = 'git@gitlab.gainetics.io:backend-cdn/dnps/cloud-end/sentinel.git'
+    PATH = "/usr/local/go/bin:${env.PATH}"
+    LOCAL_BIN  = "target/${APP_NAME}/linux/amd64/${APP_NAME}"
+    SSH_CRED_ID = "jenkins-ssh-key"
+    DEPLOY_USER = "${env.DEPLOY_USER ?: 'root'}"
+    REMOTE_BIN_PATH = "${env.REMOTE_BIN_PATH ?: "/opt/${APP_NAME}/${APP_NAME}"}"
+    JFROG_REPO_URL = "https://artifactory.gainetics.io/artifactory/observe-dnps/prod-${env.APP_NAME}"
+    JFROG_USER     = 'dnps'
+    JFROG_PASS     = 'SXKvkwRICe743VPhTkKIbA=='
+  }
+  stages {
+    stage('Validate Parameters') {
+      steps {
+        script {
+          def action = (params.ACTION ?: '').trim()
+          if (!(action in ['Release', 'Rollback'])) {
+            error("ACTION must be Release or Rollback")
+          }
+          if (action == 'Release') {
+            def ref = (params.GIT_REF ?: '').trim()
+            if (!ref) {
+              error("GIT_REF is empty in Release mode")
+            }
+            echo "Mode: Release"
+            echo "GIT_REF: ${ref}"
+          }
+          if (action == 'Rollback') {
+            def artifact = (params.ROLLBACK_ARTIFACT ?: '').trim()
+            if (!artifact || artifact in ['-- only used when ACTION=Rollback --', 'NO_ARTIFACT_FOUND', 'ERROR_FETCHING_ARTIFACTS', 'ERROR']) {
+              error("ROLLBACK_ARTIFACT is invalid in Rollback mode: ${artifact}")
+            }
+            //if (!(artifact ==~ /^ward-api-[0-9a-fA-F]{8}-\d{14}\.tar\.gz$/)) {
+            //  error("ROLLBACK_ARTIFACT format invalid: ${artifact}")
+            //}
+            def appNamePattern = java.util.regex.Pattern.quote(env.APP_NAME)
+            def artifactPattern = ~/^${appNamePattern}-[0-9a-fA-F]{8}-\d{14}\.tar\.gz$/
+            if (!(artifact ==~ artifactPattern)) {
+              error("ROLLBACK_ARTIFACT format invalid: ${artifact}")
+            }
+            echo "Mode: Rollback"
+            echo "ROLLBACK_ARTIFACT: ${artifact}"
+          }
+          def targetIps = (params.TARGET_IP ?: '').trim()
+          if (!targetIps) {
+            error("TARGET_IP 不能为空，请选择至少一个部署节点IP")
+          }
+        }
+      }
+    }
+    stage('Clean Workspace') {
+      steps {
+        deleteDir()
+      }
+    }
+stage('Checkout & Submodules') {
+  steps {
+    script {
+      def ref = (params.GIT_REF ?: 'develop').toString().trim()
+      if (!ref) {
+        error("GIT_REF is empty")
+      }
+      def repoUrl = env.REPOSITORY_URL?.trim()
+      def credId  = env.GIT_CREDENTIALS_ID?.trim()
+      if (!repoUrl) {
+        error("REPOSITORY_URL is empty")
+      }
+      if (!credId) {
+        error("GIT_CREDENTIALS_ID is empty")
+      }
+      echo "GIT_REF=${ref}"
+      echo "REPOSITORY_URL=${repoUrl}"
+      echo "GIT_CREDENTIALS_ID=${credId}"
+      def isTag = false
+      def isBranch = false
+      withCredentials([sshUserPrivateKey(
+        credentialsId: credId,
+        keyFileVariable: 'GIT_SSH_KEY',
+        usernameVariable: 'GIT_SSH_USER'
+      )]) {
+        isTag = (sh(
+          script: """#!/usr/bin/env bash
+set +e
+export GIT_SSH_COMMAND="ssh -i '$GIT_SSH_KEY' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+git ls-remote --tags '${repoUrl}' 'refs/tags/${ref}' | grep -q .
+""",
+          returnStatus: true
+        ) == 0)
+        isBranch = (sh(
+          script: """#!/usr/bin/env bash
+set +e
+export GIT_SSH_COMMAND="ssh -i '$GIT_SSH_KEY' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+git ls-remote --heads '${repoUrl}' 'refs/heads/${ref}' | grep -q .
+""",
+          returnStatus: true
+        ) == 0)
+      }
+      if (!isTag && !isBranch) {
+        error("GIT_REF not found in remote as either tag or branch: ${ref}")
+      }
+      if (isTag && isBranch) {
+        echo "Warning: ref '${ref}' exists as both tag and branch, tag will be used first."
+      }
+      def refName = isTag ? "refs/tags/${ref}" : "refs/heads/${ref}"
+      echo "Detected TAG   : ${isTag}"
+      echo "Detected BRANCH: ${isBranch}"
+      echo "Checkout ref   : ${refName}"
+      checkout([
+        $class: 'GitSCM',
+        branches: [[name: refName]],
+        userRemoteConfigs: [[
+          url: repoUrl,
+          credentialsId: credId,
+          refspec: '+refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*'
+        ]],
+        extensions: [
+          [$class: 'CloneOption', shallow: false, noTags: false, timeout: 20],
+          [$class: 'CleanBeforeCheckout']
+        ]
+      ])
+      sh '''#!/usr/bin/env bash
+set -euo pipefail
+echo "==> Current HEAD"
+git rev-parse --short HEAD
+git log -1 --oneline
+echo "==> Sync submodules"
+git submodule sync --recursive
+git submodule update --init --recursive
+echo "==> Final HEAD"
+git show -s --oneline HEAD
+'''
+      echo "Checked out ref: ${refName}"
+    }
+  }
+}
+    stage('Environment Setup') {
+      when {
+        expression { params.ACTION == 'Release' }
+      }
+      steps {
+        sh 'go install github.com/go-task/task/v3/cmd/task@latest'
+        sh 'task --version || true'
+      }
+    }
+    stage('Build') {
+      when {
+        expression { params.ACTION == 'Release' }
+      }
+      steps {
+        dir('go-protos/waf') {
+          sh 'go mod tidy'
+          sh 'task conf'
+          sh "task build-linux-amd64 -- app/${env.APP_NAME}"
+        }
+        sh '''
+          set -e
+          test -f "${LOCAL_BIN}"
+          ls -al "${LOCAL_BIN}"
+          file "${LOCAL_BIN}" || true
+        '''
+      }
+    }
+    stage('Prepare Artifact') {
+      when {
+        expression { params.ACTION == 'Release' }
+      }
+      steps {
+        script {
+          env.GIT_COMMIT_SHORT  = sh(script: 'git rev-parse --short=8 HEAD', returnStdout: true).trim()
+          env.BUILD_TS          = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
+          env.BINARY_NAME       = "${env.APP_NAME}-${env.GIT_COMMIT_SHORT}-${env.BUILD_TS}"
+          env.ARCHIVE_NAME      = "${env.BINARY_NAME}.tar.gz"
+          env.DEPLOY_SRC        = "${env.WORKSPACE}/dist/${env.BINARY_NAME}"      // 给部署用的裸二进制
+          env.ARCHIVE_SRC       = "${env.WORKSPACE}/dist/${env.ARCHIVE_NAME}"     // 给 JFrog 用的压缩包
+          env.ARTIFACT_NAME     = env.ARCHIVE_NAME                                  // 统一对外展示为归档名
+          sh """
+            set -e
+            mkdir -p dist
+            cp "${env.LOCAL_BIN}" "${env.DEPLOY_SRC}"
+            chmod 0755 "${env.DEPLOY_SRC}"
+            tar -C "${env.WORKSPACE}/dist" -czf "${env.ARCHIVE_SRC}" "${env.BINARY_NAME}"
+            echo "=== binary ==="
+            ls -al "${env.DEPLOY_SRC}"
+            du -h "${env.DEPLOY_SRC}"
+            echo "=== archive ==="
+            ls -al "${env.ARCHIVE_SRC}"
+            du -h "${env.ARCHIVE_SRC}"
+            tar -tzf "${env.ARCHIVE_SRC}"
+          """
+          echo "Prepared release binary : ${env.BINARY_NAME}"
+          echo "Prepared release archive: ${env.ARCHIVE_NAME}"
+        }
+      }
+    }
+    stage('Download Artifact') {
+      when {
+        expression { params.ACTION == 'Rollback' }
+      }
+      steps {
+        script {
+          env.ARTIFACT_NAME = (params.ROLLBACK_ARTIFACT ?: '').trim()
+          env.ARCHIVE_NAME  = env.ARTIFACT_NAME
+          env.BINARY_NAME   = env.ARTIFACT_NAME.replaceFirst(/\.tar\.gz$/, '')
+          env.ARCHIVE_SRC   = "${env.WORKSPACE}/dist/${env.ARCHIVE_NAME}"
+          env.DEPLOY_SRC    = "${env.WORKSPACE}/dist/${env.BINARY_NAME}"
+          sh """
+            set -e
+            mkdir -p dist
+            curl --fail --show-error --silent \\
+              -u "${env.JFROG_USER}:${env.JFROG_PASS}" \\
+              -o "${env.ARCHIVE_SRC}" \\
+              "${env.JFROG_REPO_URL}/${env.ARCHIVE_NAME}"
+            echo "=== downloaded archive ==="
+            ls -al "${env.ARCHIVE_SRC}"
+            du -h "${env.ARCHIVE_SRC}"
+            tar -xzf "${env.ARCHIVE_SRC}" -C "${env.WORKSPACE}/dist"
+            test -f "${env.DEPLOY_SRC}"
+            chmod 0755 "${env.DEPLOY_SRC}"
+            echo "=== extracted binary ==="
+            ls -al "${env.DEPLOY_SRC}"
+            du -h "${env.DEPLOY_SRC}"
+          """
+          echo "Downloaded rollback archive: ${env.ARCHIVE_NAME}"
+          echo "Extracted rollback binary : ${env.BINARY_NAME}"
+        }
+      }
+    }
+    stage('Deploy to Targets') {
+      steps {
+        script {
+          def deploySrc = (env.DEPLOY_SRC ?: '').trim()
+          if (!deploySrc) {
+            error("DEPLOY_SRC is empty")
+          }
+          sh """
+            set -e
+            test -f "${deploySrc}"
+            ls -al "${deploySrc}"
+          """
+          def hosts = (params.TARGET_IP ?: '').trim()
+            .replace(',', ' ')  // 将多选分隔符替换为空格
+            .split(/\s+/)       // 拆分为IP数组
+            .findAll { it }     // 过滤空值
+          if (hosts.isEmpty()) {
+            error("TARGET_HOSTS env is empty")
+          }
+          def remoteBin = (env.REMOTE_BIN_PATH ?: '').trim()
+          if (!remoteBin) {
+            error("REMOTE_BIN_PATH env is empty")
+          }
+          def remoteDir  = remoteBin.contains('/') ? remoteBin.substring(0, remoteBin.lastIndexOf('/')) : '.'
+          def deployUser = (env.DEPLOY_USER ?: 'root').trim()
+          echo "Deploy binary : ${env.BINARY_NAME ?: env.ARTIFACT_NAME}"
+          echo "Source file    : ${deploySrc}"
+          echo "Deploy targets (${hosts.size()}): ${hosts.join(', ')}"
+          echo "DEPLOY_USER=${deployUser}"
+          echo "REMOTE_BIN_PATH=${remoteBin}"
+          echo "REMOTE_DIR=${remoteDir}"
+          withCredentials([sshUserPrivateKey(
+            credentialsId: env.SSH_CRED_ID,
+            keyFileVariable: 'SSH_KEY_FILE'
+          )]) {
+            def fanout = [:]
+            for (int i = 0; i < hosts.size(); i++) {
+              def host = hosts[i]
+              fanout["deploy_${host}"] = {
+                sh """#!/usr/bin/env bash
+set -euo pipefail
+SSH_OPTS="-i \$SSH_KEY_FILE -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -o ServerAliveInterval=10 -o ServerAliveCountMax=2"
+echo "==> [${host}] ensure dir: ${remoteDir}"
+ssh \$SSH_OPTS ${deployUser}@${host} "mkdir -p '${remoteDir}'"
+echo "==> [${host}] scp binary -> /tmp/${env.APP_NAME}.new"
+scp \$SSH_OPTS "${deploySrc}" ${deployUser}@${host}:/tmp/${env.APP_NAME}.new
+echo "==> [${host}] install -> ${remoteBin}"
+ssh \$SSH_OPTS ${deployUser}@${host} "set -e
+  install -m 0755 /tmp/${env.APP_NAME}.new '${remoteBin}'
+  rm -f /tmp/${env.APP_NAME}.new
+  systemctl restart ${env.APP_NAME}.service
+  systemctl is-active --quiet ${env.APP_NAME}.service
+"
+echo "==> [${host}] done"
+"""
+              }
+            }
+            parallel fanout
+          }
+        }
+      }
+    }
+    stage('Upload to JFrog') {
+      when {
+        expression { params.ACTION == 'Release' }
+      }
+      steps {
+        script {
+          if (!(env.ARCHIVE_NAME ?: '').trim()) {
+            error("ARCHIVE_NAME is empty")
+          }
+          if (!(env.ARCHIVE_SRC ?: '').trim()) {
+            error("ARCHIVE_SRC is empty")
+          }
+          sh """
+            set -e
+            test -f "${env.ARCHIVE_SRC}"
+            echo "=== upload archive ==="
+            ls -al "${env.ARCHIVE_SRC}"
+            du -h "${env.ARCHIVE_SRC}"
+            curl --fail --show-error --silent \\
+              -u "${env.JFROG_USER}:${env.JFROG_PASS}" \\
+              --upload-file "${env.ARCHIVE_SRC}" \\
+              "${env.JFROG_REPO_URL}/${env.ARCHIVE_NAME}"
+          """
+          echo "Uploaded to JFrog: ${env.JFROG_REPO_URL}/${env.ARCHIVE_NAME}"
+        }
+      }
+    }
+  }
+  post {
+    success {
+      echo "Pipeline success! mode=${params.ACTION}, artifact=${env.ARTIFACT_NAME ?: env.ARCHIVE_NAME ?: 'N/A'}"
+    }
+    failure {
+      echo 'Pipeline failed, please check logs.'
+    }
+  }
+}
