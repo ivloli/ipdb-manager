@@ -1,9 +1,6 @@
 // This pipeline is designed for Jenkins UI-managed parameters only.
 // IMPORTANT: Do not add `parameters {}` or `properties(...)` here,
-// otherwise UI dynamic parameters may be overwritten.
-// Rollback artifact supports both modes:
-// - selected from UI dynamic dropdown
-// - auto-select latest from JFrog when empty/invalid placeholder
+// otherwise UI dynamic parameters (e.g. rollback groovy dropdown) may be overwritten.
 
 pipeline {
   agent any
@@ -56,18 +53,18 @@ pipeline {
 
           if (action == 'Rollback') {
             def artifact = (params.ROLLBACK_ARTIFACT ?: '').trim()
-            if (artifact && !(artifact in ['-- only used when ACTION=Rollback --', 'NO_ARTIFACT_FOUND', 'ERROR_FETCHING_ARTIFACTS', 'ERROR'])) {
-              def appNamePattern = java.util.regex.Pattern.quote(env.APP_NAME)
-              def artifactPattern = ~/^${appNamePattern}-offline-linux-amd64-.+\.tar\.gz$/
-              if (!(artifact ==~ artifactPattern)) {
-                error("ROLLBACK_ARTIFACT format invalid: ${artifact}")
-              }
-              echo 'Mode: Rollback'
-              echo "ROLLBACK_ARTIFACT(from UI): ${artifact}"
-            } else {
-              echo 'Mode: Rollback'
-              echo 'ROLLBACK_ARTIFACT empty/placeholder, will auto-select latest artifact from JFrog'
+            if (!artifact || artifact in ['-- only used when ACTION=Rollback --', 'NO_ARTIFACT_FOUND', 'ERROR_FETCHING_ARTIFACTS', 'ERROR']) {
+              error("ROLLBACK_ARTIFACT is invalid in Rollback mode: ${artifact}")
             }
+
+            def appNamePattern = java.util.regex.Pattern.quote(env.APP_NAME)
+            def artifactPattern = ~/^${appNamePattern}-offline-linux-amd64-.+\.tar\.gz$/
+            if (!(artifact ==~ artifactPattern)) {
+              error("ROLLBACK_ARTIFACT format invalid: ${artifact}")
+            }
+
+            echo 'Mode: Rollback'
+            echo "ROLLBACK_ARTIFACT: ${artifact}"
           }
 
           def targetIps = (params.TARGET_IP ?: '').trim()
@@ -193,33 +190,7 @@ git log -1 --oneline
       }
       steps {
         script {
-          def requestedArtifact = (params.ROLLBACK_ARTIFACT ?: '').trim()
-          if (!requestedArtifact || requestedArtifact in ['-- only used when ACTION=Rollback --', 'NO_ARTIFACT_FOUND', 'ERROR_FETCHING_ARTIFACTS', 'ERROR']) {
-            requestedArtifact = sh(
-              script: '''#!/usr/bin/env bash
-set -euo pipefail
-curl -s -u '"${JFROG_USER}:${JFROG_PASS}"' '"${JFROG_REPO_URL}/"' \
-| grep -oE 'href="ipdb-manager-offline-linux-amd64-[^"]+\.tar\.gz"' \
-| sed -e 's/^href="//' -e 's/"$//' \
-| awk '!seen[$0]++' \
-| head -n 1
-''',
-              returnStdout: true
-            ).trim()
-
-            if (!requestedArtifact) {
-              error('ROLLBACK_ARTIFACT empty and failed to auto-detect latest artifact from JFrog')
-            }
-            echo "Auto-selected rollback artifact: ${requestedArtifact}"
-          }
-
-          def appNamePattern = java.util.regex.Pattern.quote(env.APP_NAME)
-          def artifactPattern = ~/^${appNamePattern}-offline-linux-amd64-.+\.tar\.gz$/
-          if (!(requestedArtifact ==~ artifactPattern)) {
-            error("Resolved rollback artifact format invalid: ${requestedArtifact}")
-          }
-
-          env.ARTIFACT_NAME = requestedArtifact
+          env.ARTIFACT_NAME = (params.ROLLBACK_ARTIFACT ?: '').trim()
           env.ARCHIVE_NAME = env.ARTIFACT_NAME
           env.ARCHIVE_SRC = "${env.WORKSPACE}/${env.ARCHIVE_NAME}"
 

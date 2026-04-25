@@ -1,0 +1,249 @@
+pipeline {
+  agent any
+
+  options {
+    buildDiscarder(logRotator(numToKeepStr: '15'))
+    disableConcurrentBuilds()
+    timestamps()
+  }
+
+  parameters {
+    choice(name: 'ACTION', choices: ['Release', 'Rollback'], description: 'Deploy mode: Release 发版，Rollback 回滚')
+
+    gitParameter(
+      name: 'GIT_REF',
+      type: 'PT_BRANCH_TAG',
+      defaultValue: 'main',
+      branchFilter: 'origin/(.*)',
+      sortMode: 'DESCENDING_SMART',
+      selectedValue: 'DEFAULT',
+      useRepository: 'git@gitlab.gainetics.io:backend-cdn/dns-prj/ipdb_manager.git',
+      quickFilterEnabled: true
+    )
+
+    extendedChoice(
+      name: 'TARGET_IP',
+      description: '选择部署的节点IP（可多选，支持 ip 或 ip:port）',
+      type: 'PT_MULTI_SELECT',
+      value: '18.163.97.144',
+      defaultValue: '18.163.97.144',
+      multiSelectDelimiter: ',',
+      visibleItemCount: 5
+    )
+
+    text(
+      name: 'CONFIG_YAML',
+      defaultValue: '''nacos:
+  addr: "172.17.0.2:8848"
+  namespace: "scloud-prod"
+  group: "subnet_mapping"
+  data_id: "subnet_map"
+  data_id_v6: "subnet_map_v6"
+  username: "scloud-admin"
+  password: "2a958ec104323d2a9374675154d1a4fc"
+ip2region:
+  dir: "/var/lib/ipdb-manager/ip2region"
+  txt_path: "/var/lib/ipdb-manager/ip2region/ipv4_source.txt"
+  xdb_path: "/var/lib/ipdb-manager/ip2region/ip2region_v4.xdb"
+  txt_v6_path: "/var/lib/ipdb-manager/ip2region/ipv6_source.txt"
+  xdb_v6_path: "/var/lib/ipdb-manager/ip2region/ip2region_v6.xdb"
+  poll_interval: "1h"
+  github_token: "${GITHUB_TOKEN}"
+  releases_url: "https://api.github.com/repos/lionsoul2014/ip2region/releases/latest"
+api:
+  listen: ":9090"
+  token: "${IPDB_MANAGER_API_TOKEN}"
+scheduler:
+  cron: "0 1 * * *"
+local_state:
+  upstream_release_tag_file: "/var/lib/ipdb-manager/ip2region/.upstream_release_tag"
+  legacy_version_file: "/var/lib/ipdb-manager/ip2region/.version"
+artifact_repos:
+  - id: jfrog_probe
+    type: jfrog
+    base_url: "https://artifactory.gainetics.io/artifactory"
+    repo: "observe-dnps"
+    auth:
+      username_ref: "dnps"
+      password_ref: "SXKvkwRICe743VPhTkKIbA=="
+    enabled: true
+nacos_targets:
+  - id: probe_dev_target
+    server_addr: "172.17.0.2:8848"
+    namespace: "scloud-prod"
+    auth:
+      username_ref: "scloud-admin"
+      password_ref: "2a958ec104323d2a9374675154d1a4fc"
+    publish:
+      v4:
+        group: "ip_data_v4"
+        data_id: "ip2region_meta"
+      v6:
+        group: "ip_data_v6"
+        data_id: "ip2region_meta"
+    artifact_repo_id: "jfrog_probe"
+    artifact_path_templates:
+      v4: "ip2region/{{version}}/ip2region_v4.xdb"
+      v6: "ip2region/{{version}}/ip2region_v6.xdb"
+    enabled: true
+''',
+      description: '仅 Release 使用：会写入离线包里的 config.yaml 内容'
+    )
+    string(name: 'ROLLBACK_ARTIFACT', defaultValue: '', description: '仅 Rollback 使用；留空则自动取制品库最新包')
+    string(name: 'TARGET_OS', defaultValue: 'linux', description: 'release package target OS')
+    string(name: 'TARGET_ARCH', defaultValue: 'amd64', description: 'release package target ARCH')
+    string(name: 'RELEASE_TAG', defaultValue: '', description: '可选，空则自动生成')
+    booleanParam(name: 'USE_SUDO', defaultValue: true, description: '目标机安装与重启是否使用 sudo')
+  }
+
+  environment {
+    APP_NAME = "${env.APP_NAME ?: 'ipdb-manager'}"
+    GIT_CREDENTIALS_ID = 'deploy_01'
+    REPOSITORY_URL = 'git@gitlab.gainetics.io:backend-cdn/dns-prj/ipdb_manager.git'
+    PATH = "/usr/local/go/bin:${env.PATH}"
+    SSH_CRED_ID = 'ipdb-manager-ssh'
+    DEPLOY_USER = "${env.DEPLOY_USER ?: 'root'}"
+    REMOTE_SERVICE = "${env.REMOTE_SERVICE ?: 'ipdb-manager'}"
+    REMOTE_DEPLOY_DIR = "${env.REMOTE_DEPLOY_DIR ?: '/opt/ipdb-manager/releases'}"
+    JFROG_REPO_URL = 'https://artifactory.gainetics.io/artifactory/observe-dnps/prod-ipdb-xdb-manager'
+    JFROG_USER = 'dnps'
+    JFROG_PASS = 'SXKvkwRICe743VPhTkKIbA=='
+  }
+
+  stages {
+    stage('Validate Parameters') {
+      steps {
+        script {
+          def action = (params.ACTION ?: '').trim()
+          if (!(action in ['Release', 'Rollback'])) error('ACTION must be Release or Rollback')
+          if (action == 'Release' && !(params.CONFIG_YAML ?: '').trim()) error('CONFIG_YAML is empty in Release mode')
+        }
+      }
+    }
+
+    stage('Clean Workspace') {
+      steps { deleteDir() }
+    }
+
+    stage('Checkout') {
+      steps {
+        checkout([
+          $class: 'GitSCM',
+          branches: [[name: params.GIT_REF]],
+          userRemoteConfigs: [[
+            url: env.REPOSITORY_URL,
+            credentialsId: env.GIT_CREDENTIALS_ID,
+            refspec: '+refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*'
+          ]],
+          extensions: [[$class: 'CleanBeforeCheckout']]
+        ])
+      }
+    }
+
+    stage('Prepare Artifact') {
+      when { expression { params.ACTION == 'Release' } }
+      steps {
+        script {
+          env.GIT_COMMIT_SHORT = sh(script: 'git rev-parse --short=8 HEAD', returnStdout: true).trim()
+          env.BUILD_TS = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
+          env.RELEASE_TAG_EFFECTIVE = (params.RELEASE_TAG ?: '').trim() ?: "${env.GIT_COMMIT_SHORT}-${env.BUILD_TS}"
+          env.CONFIG_SRC = "${env.WORKSPACE}/jenkins-config.yaml"
+          writeFile file: env.CONFIG_SRC, text: params.CONFIG_YAML
+          env.ARCHIVE_NAME = "${env.APP_NAME}-offline-${params.TARGET_OS}-${params.TARGET_ARCH}-${env.RELEASE_TAG_EFFECTIVE}.tar.gz"
+          env.ARCHIVE_SRC = "${env.WORKSPACE}/${env.ARCHIVE_NAME}"
+
+          sh """
+            set -e
+            make release-package TARGET_OS='${params.TARGET_OS}' TARGET_ARCH='${params.TARGET_ARCH}' RELEASE_TAG='${env.RELEASE_TAG_EFFECTIVE}' CONFIG_SRC='${env.CONFIG_SRC}'
+            test -f "${env.ARCHIVE_SRC}"
+          """
+        }
+      }
+    }
+
+    stage('Download Artifact') {
+      when { expression { params.ACTION == 'Rollback' } }
+      steps {
+        script {
+          def requested = (params.ROLLBACK_ARTIFACT ?: '').trim()
+          if (!requested) {
+            requested = sh(
+              script: """#!/usr/bin/env bash
+set -euo pipefail
+curl -s -u '${env.JFROG_USER}:${env.JFROG_PASS}' '${env.JFROG_REPO_URL}/' \
+| grep -oE 'href=\"ipdb-manager-offline-linux-amd64-[^\"]+\\.tar\\.gz\"' \
+| sed -e 's/^href=\"//' -e 's/\"$//' \
+| awk '!seen[\$0]++' \
+| head -n 1
+""",
+              returnStdout: true
+            ).trim()
+            if (!requested) error('ROLLBACK_ARTIFACT empty and failed to auto-detect latest artifact')
+            echo "Auto-selected rollback artifact: ${requested}"
+          }
+
+          env.ARCHIVE_NAME = requested
+          env.ARCHIVE_SRC = "${env.WORKSPACE}/${env.ARCHIVE_NAME}"
+
+          sh """
+            set -e
+            curl --fail --show-error --silent -u "${env.JFROG_USER}:${env.JFROG_PASS}" -o "${env.ARCHIVE_SRC}" "${env.JFROG_REPO_URL}/${env.ARCHIVE_NAME}"
+          """
+        }
+      }
+    }
+
+    stage('Deploy to Targets') {
+      steps {
+        script {
+          def deploySrc = (env.ARCHIVE_SRC ?: '').trim()
+          if (!deploySrc) error('ARCHIVE_SRC is empty')
+          def hosts = (params.TARGET_IP ?: '').trim().replace(',', ' ').split(/\s+/).findAll { it }
+          if (hosts.isEmpty()) error('TARGET_IP env is empty')
+
+          withCredentials([sshUserPrivateKey(credentialsId: env.SSH_CRED_ID, keyFileVariable: 'SSH_KEY_FILE')]) {
+            def fanout = [:]
+            for (int i = 0; i < hosts.size(); i++) {
+              def hostFull = hosts[i]
+              fanout["deploy_${hostFull}"] = {
+                def parts = hostFull.split(':')
+                def host = parts[0]
+                def port = parts.size() > 1 ? parts[1] : '22'
+                sh """#!/usr/bin/env bash
+set -euo pipefail
+SSH_OPTS=\"-i \$SSH_KEY_FILE -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -p ${port}\"
+SCP_OPTS=\"-i \$SSH_KEY_FILE -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P ${port}\"
+ssh \$SSH_OPTS ${env.DEPLOY_USER}@${host} \"mkdir -p '${env.REMOTE_DEPLOY_DIR}'\"
+scp \$SCP_OPTS \"${deploySrc}\" ${env.DEPLOY_USER}@${host}:${env.REMOTE_DEPLOY_DIR}/
+ssh \$SSH_OPTS ${env.DEPLOY_USER}@${host} \"DEPLOY_DIR='${env.REMOTE_DEPLOY_DIR}' ARTIFACT_TAR='${env.ARCHIVE_NAME}' REMOTE_SERVICE='${env.REMOTE_SERVICE}' USE_SUDO='${params.USE_SUDO}' bash -s\" <<'EOF'
+set -euo pipefail
+if [ \"\$USE_SUDO\" = \"true\" ]; then SUDO_CMD='sudo'; else SUDO_CMD=''; fi
+cd \"\$DEPLOY_DIR\"
+tar -xzf \"\$ARTIFACT_TAR\"
+RELEASE_DIR=\"\$(tar -tzf \"\$ARTIFACT_TAR\" | cut -d/ -f1 | sed -n '1p')\"
+cd \"\$RELEASE_DIR\"
+\$SUDO_CMD make install CONFIG_SRC=config.yaml
+\$SUDO_CMD systemctl daemon-reload
+\$SUDO_CMD systemctl restart \"\$REMOTE_SERVICE\"
+\$SUDO_CMD systemctl is-active --quiet \"\$REMOTE_SERVICE\"
+EOF
+"""
+              }
+            }
+            parallel fanout
+          }
+        }
+      }
+    }
+
+    stage('Upload to JFrog') {
+      when { expression { params.ACTION == 'Release' } }
+      steps {
+        sh """
+          set -e
+          curl --fail --show-error --silent -u "${env.JFROG_USER}:${env.JFROG_PASS}" --upload-file "${env.ARCHIVE_SRC}" "${env.JFROG_REPO_URL}/${env.ARCHIVE_NAME}"
+        """
+      }
+    }
+  }
+}
