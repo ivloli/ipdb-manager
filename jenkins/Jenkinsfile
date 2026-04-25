@@ -52,7 +52,7 @@ pipeline {
   environment {
     APP_NAME = "${env.APP_NAME ?: 'ipdb-manager'}"
 
-    GIT_CREDENTIALS_ID = 'deploy'
+    GIT_CREDENTIALS_ID = 'deploy_01'
     REPOSITORY_URL     = 'git@gitlab.gainetics.io:backend-cdn/dns-prj/ipdb_manager.git'
 
     PATH = "/usr/local/go/bin:${env.PATH}"
