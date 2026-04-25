@@ -25,8 +25,8 @@ pipeline {
       name: 'TARGET_IP',
       description: '选择部署的节点IP（可多选，支持 ip 或 ip:port）',
       type: 'PT_MULTI_SELECT',
-      value: '10.0.5.238',
-      defaultValue: '10.0.5.238',
+      value: '18.163.97.144',
+      defaultValue: '18.163.97.144',
       multiSelectDelimiter: ',',
       visibleItemCount: 5
     )
