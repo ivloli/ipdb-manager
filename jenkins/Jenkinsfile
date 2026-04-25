@@ -8,7 +8,7 @@ pipeline {
   }
 
   parameters {
-    choice(name: 'ACTION', choices: ['Release', 'Rollback'], description: 'Deploy mode： Release 发版，Rollback 回滚')
+    choice(name: 'ACTION', choices: ['Release', 'Rollback'], description: 'Deploy mode： Release发版，Rollback 回滚')
 
     gitParameter(
       name: 'GIT_REF',
@@ -16,26 +16,14 @@ pipeline {
       defaultValue: 'main',
       branchFilter: 'origin/(.*)',
       sortMode: 'DESCENDING_SMART',
-      selectedValue: 'TOP',
+      selectedValue: 'DEFAULT',
       useRepository: 'git@gitlab.gainetics.io:backend-cdn/dns-prj/ipdb_manager.git',
       quickFilterEnabled: true
     )
 
-    text(
-      name: 'CONFIG_YAML',
-      defaultValue: '',
-      description: '仅 Release 使用：会写入离线包里的 config.yaml'
-    )
-
-    string(
-      name: 'ROLLBACK_ARTIFACT',
-      defaultValue: '',
-      description: '仅 Rollback 使用，例如 ipdb-manager-offline-linux-amd64-xxxx.tar.gz'
-    )
-
     extendedChoice(
       name: 'TARGET_IP',
-      description: '选择部署的节点IP（当前只有一台）',
+      description: '选择部署的节点IP（可多选，支持 ip 或 ip:port）',
       type: 'PT_MULTI_SELECT',
       value: '10.0.5.238',
       defaultValue: '10.0.5.238',
@@ -43,19 +31,26 @@ pipeline {
       visibleItemCount: 5
     )
 
-    string(name: 'TARGET_PORT', defaultValue: '22', description: 'Remote SSH port')
-    string(name: 'TARGET_USER', defaultValue: 'root', description: 'Remote SSH user')
-    string(name: 'TARGET_DIR', defaultValue: '/opt/ipdb-manager/releases', description: 'Remote deploy directory')
-    string(name: 'REMOTE_SERVICE', defaultValue: 'ipdb-manager', description: 'Systemd service name')
-    booleanParam(name: 'USE_SUDO', defaultValue: true, description: 'Use sudo for remote install and restart')
+    text(
+      name: 'CONFIG_YAML',
+      defaultValue: '',
+      description: '仅 Release 使用：会写入离线包里的 config.yaml 内容'
+    )
 
-    string(name: 'TARGET_OS', defaultValue: 'linux', description: 'Target OS for release package')
-    string(name: 'TARGET_ARCH', defaultValue: 'amd64', description: 'Target architecture for release package')
-    string(name: 'RELEASE_TAG', defaultValue: '', description: 'Optional release tag (empty = Makefile default)')
+    string(
+      name: 'ROLLBACK_ARTIFACT',
+      defaultValue: '',
+      description: '仅 Rollback 使用，例如 ipdb-manager-offline-linux-amd64-v3.tar.gz'
+    )
+
+    string(name: 'TARGET_OS', defaultValue: 'linux', description: 'release package target OS')
+    string(name: 'TARGET_ARCH', defaultValue: 'amd64', description: 'release package target ARCH')
+    string(name: 'RELEASE_TAG', defaultValue: '', description: '可选，空则自动生成')
+    booleanParam(name: 'USE_SUDO', defaultValue: true, description: '目标机安装与重启是否使用 sudo')
   }
 
   environment {
-    APP_NAME = "ipdb-manager"
+    APP_NAME = "${env.APP_NAME ?: 'ipdb-manager'}"
 
     GIT_CREDENTIALS_ID = 'deploy'
     REPOSITORY_URL     = 'git@gitlab.gainetics.io:backend-cdn/dns-prj/ipdb_manager.git'
@@ -63,6 +58,9 @@ pipeline {
     PATH = "/usr/local/go/bin:${env.PATH}"
 
     SSH_CRED_ID = 'ipdb-manager-ssh'
+    DEPLOY_USER = "${env.DEPLOY_USER ?: 'root'}"
+    REMOTE_SERVICE = "${env.REMOTE_SERVICE ?: 'ipdb-manager'}"
+    REMOTE_DEPLOY_DIR = "${env.REMOTE_DEPLOY_DIR ?: '/opt/ipdb-manager/releases'}"
 
     JFROG_REPO_URL = 'https://artifactory.gainetics.io/artifactory/observe-dnps/prod-ipdb-xdb-manager'
     JFROG_USER     = 'dnps'
@@ -83,19 +81,17 @@ pipeline {
             if (!ref) {
               error('GIT_REF is empty in Release mode')
             }
-
             def cfg = (params.CONFIG_YAML ?: '').trim()
             if (!cfg) {
               error('CONFIG_YAML is empty in Release mode')
             }
-
             echo 'Mode: Release'
             echo "GIT_REF: ${ref}"
           }
 
           if (action == 'Rollback') {
             def artifact = (params.ROLLBACK_ARTIFACT ?: '').trim()
-            if (!artifact || artifact in ['NO_ARTIFACT_FOUND', 'ERROR', 'ERROR_FETCHING_ARTIFACTS']) {
+            if (!artifact || artifact in ['-- only used when ACTION=Rollback --', 'NO_ARTIFACT_FOUND', 'ERROR_FETCHING_ARTIFACTS', 'ERROR']) {
               error("ROLLBACK_ARTIFACT is invalid in Rollback mode: ${artifact}")
             }
 
@@ -123,7 +119,7 @@ pipeline {
       }
     }
 
-    stage('Checkout & Submodules') {
+    stage('Checkout') {
       steps {
         script {
           def ref = (params.GIT_REF ?: 'main').toString().trim()
@@ -146,7 +142,6 @@ pipeline {
           echo "GIT_CREDENTIALS_ID=${credId}"
 
           def isTag = false
-          def isBranch = false
 
           withCredentials([sshUserPrivateKey(
             credentialsId: credId,
@@ -161,30 +156,10 @@ git ls-remote --tags '${repoUrl}' 'refs/tags/${ref}' | grep -q .
 """,
               returnStatus: true
             ) == 0)
-
-            isBranch = (sh(
-              script: """#!/usr/bin/env bash
-set +e
-export GIT_SSH_COMMAND=\"ssh -i '$GIT_SSH_KEY' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null\"
-git ls-remote --heads '${repoUrl}' 'refs/heads/${ref}' | grep -q .
-""",
-              returnStatus: true
-            ) == 0)
-          }
-
-          if (!isTag && !isBranch) {
-            error("GIT_REF not found in remote as either tag or branch: ${ref}")
-          }
-
-          if (isTag && isBranch) {
-            echo "Warning: ref '${ref}' exists as both tag and branch, tag will be used first."
           }
 
           def refName = isTag ? "refs/tags/${ref}" : "refs/heads/${ref}"
-
-          echo "Detected TAG   : ${isTag}"
-          echo "Detected BRANCH: ${isBranch}"
-          echo "Checkout ref   : ${refName}"
+          echo "Selected ${isTag ? 'TAG' : 'BRANCH'}: ${refName}"
 
           checkout([
             $class: 'GitSCM',
@@ -202,32 +177,10 @@ git ls-remote --heads '${repoUrl}' 'refs/heads/${ref}' | grep -q .
 
           sh '''#!/usr/bin/env bash
 set -euo pipefail
-echo "==> Current HEAD"
+git submodule update --init --recursive
 git rev-parse --short HEAD
 git log -1 --oneline
-
-echo "==> Sync submodules"
-git submodule sync --recursive
-git submodule update --init --recursive
-
-echo "==> Final HEAD"
-git show -s --oneline HEAD
 '''
-
-          echo "Checked out ref: ${refName}"
-        }
-      }
-    }
-
-    stage('Inject Config From Jenkins') {
-      when {
-        expression { params.ACTION == 'Release' }
-      }
-      steps {
-        script {
-          env.CONFIG_SRC = "${env.WORKSPACE}/jenkins-config.yaml"
-          writeFile file: env.CONFIG_SRC, text: params.CONFIG_YAML
-          sh "test -s '${env.CONFIG_SRC}'"
         }
       }
     }
@@ -240,25 +193,28 @@ git show -s --oneline HEAD
         script {
           env.GIT_COMMIT_SHORT = sh(script: 'git rev-parse --short=8 HEAD', returnStdout: true).trim()
           env.BUILD_TS = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
-
           env.RELEASE_TAG_EFFECTIVE = (params.RELEASE_TAG ?: '').trim() ?: "${env.GIT_COMMIT_SHORT}-${env.BUILD_TS}"
+
+          env.CONFIG_SRC = "${env.WORKSPACE}/jenkins-config.yaml"
+          writeFile file: env.CONFIG_SRC, text: params.CONFIG_YAML
+
           env.ARCHIVE_NAME = "${env.APP_NAME}-offline-${params.TARGET_OS}-${params.TARGET_ARCH}-${env.RELEASE_TAG_EFFECTIVE}.tar.gz"
           env.ARCHIVE_SRC = "${env.WORKSPACE}/${env.ARCHIVE_NAME}"
           env.ARTIFACT_NAME = env.ARCHIVE_NAME
 
           sh """
-            set -euo pipefail
+            set -e
+            test -s "${env.CONFIG_SRC}"
+
             make release-package \
               TARGET_OS='${params.TARGET_OS}' \
               TARGET_ARCH='${params.TARGET_ARCH}' \
               RELEASE_TAG='${env.RELEASE_TAG_EFFECTIVE}' \
               CONFIG_SRC='${env.CONFIG_SRC}'
 
-            test -f '${env.ARCHIVE_SRC}'
-            echo '=== release archive ==='
-            ls -al '${env.ARCHIVE_SRC}'
-            du -h '${env.ARCHIVE_SRC}'
-            tar -tzf '${env.ARCHIVE_SRC}' | sed -n '1,20p'
+            test -f "${env.ARCHIVE_SRC}"
+            ls -al "${env.ARCHIVE_SRC}"
+            du -h "${env.ARCHIVE_SRC}"
           """
 
           echo "Prepared release archive: ${env.ARCHIVE_NAME}"
@@ -277,15 +233,14 @@ git show -s --oneline HEAD
           env.ARCHIVE_SRC = "${env.WORKSPACE}/${env.ARCHIVE_NAME}"
 
           sh """
-            set -euo pipefail
+            set -e
             curl --fail --show-error --silent \
               -u "${env.JFROG_USER}:${env.JFROG_PASS}" \
               -o "${env.ARCHIVE_SRC}" \
               "${env.JFROG_REPO_URL}/${env.ARCHIVE_NAME}"
 
-            echo '=== downloaded archive ==='
-            ls -al '${env.ARCHIVE_SRC}'
-            du -h '${env.ARCHIVE_SRC}'
+            ls -al "${env.ARCHIVE_SRC}"
+            du -h "${env.ARCHIVE_SRC}"
           """
 
           echo "Downloaded rollback archive: ${env.ARCHIVE_NAME}"
@@ -293,7 +248,7 @@ git show -s --oneline HEAD
       }
     }
 
-    stage('Deploy To Targets') {
+    stage('Deploy to Targets') {
       steps {
         script {
           def deploySrc = (env.ARCHIVE_SRC ?: '').trim()
@@ -316,17 +271,15 @@ git show -s --oneline HEAD
             error('TARGET_IP env is empty')
           }
 
-          def deployUser = (params.TARGET_USER ?: 'root').trim()
-          def deployPort = (params.TARGET_PORT ?: '22').trim()
-          def deployDir = (params.TARGET_DIR ?: '/opt/ipdb-manager/releases').trim()
-          def remoteService = (params.REMOTE_SERVICE ?: 'ipdb-manager').trim()
+          def deployDir = (env.REMOTE_DEPLOY_DIR ?: '/opt/ipdb-manager/releases').trim()
+          def deployUser = (env.DEPLOY_USER ?: 'root').trim()
+          def remoteService = (env.REMOTE_SERVICE ?: 'ipdb-manager').trim()
 
           echo "Deploy artifact : ${env.ARCHIVE_NAME}"
-          echo "Source archive   : ${deploySrc}"
+          echo "Source archive  : ${deploySrc}"
           echo "Deploy targets (${hosts.size()}): ${hosts.join(', ')}"
-          echo "TARGET_USER=${deployUser}"
-          echo "TARGET_PORT=${deployPort}"
-          echo "TARGET_DIR=${deployDir}"
+          echo "DEPLOY_USER=${deployUser}"
+          echo "REMOTE_DEPLOY_DIR=${deployDir}"
           echo "REMOTE_SERVICE=${remoteService}"
 
           withCredentials([sshUserPrivateKey(
@@ -336,58 +289,44 @@ git show -s --oneline HEAD
             def fanout = [:]
 
             for (int i = 0; i < hosts.size(); i++) {
-              def host = hosts[i]
+              def hostFull = hosts[i]
 
-              fanout["deploy_${host}"] = {
+              fanout["deploy_${hostFull}"] = {
+                def parts = hostFull.split(':')
+                def host = parts[0]
+                def port = parts.size() > 1 ? parts[1] : '22'
+
                 sh """#!/usr/bin/env bash
 set -euo pipefail
 
-echo '==> [${host}] ensure dir: ${deployDir}'
-ssh -p "${deployPort}" \
-  -i "\$SSH_KEY_FILE" \
-  -o StrictHostKeyChecking=accept-new \
-  -o ConnectTimeout=8 \
-  -o ServerAliveInterval=10 \
-  -o ServerAliveCountMax=2 \
-  "${deployUser}@${host}" "mkdir -p '${deployDir}'"
+SSH_OPTS="-i \$SSH_KEY_FILE -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -p ${port}"
+SCP_OPTS="-i \$SSH_KEY_FILE -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P ${port}"
 
-echo '==> [${host}] scp archive -> ${deployDir}'
-scp -P "${deployPort}" \
-  -i "\$SSH_KEY_FILE" \
-  -o StrictHostKeyChecking=accept-new \
-  -o ConnectTimeout=8 \
-  "${deploySrc}" "${deployUser}@${host}:${deployDir}/"
+echo "==> [${host}] ensure dir: ${deployDir}"
+ssh \$SSH_OPTS ${deployUser}@${host} "mkdir -p '${deployDir}'"
 
-echo '==> [${host}] install + restart service'
-ssh -p "${deployPort}" \
-  -i "\$SSH_KEY_FILE" \
-  -o StrictHostKeyChecking=accept-new \
-  -o ConnectTimeout=8 \
-  -o ServerAliveInterval=10 \
-  -o ServerAliveCountMax=2 \
-  "${deployUser}@${host}" "DEPLOY_DIR='${deployDir}' ARTIFACT_TAR='${env.ARCHIVE_NAME}' REMOTE_SERVICE='${remoteService}' USE_SUDO='${params.USE_SUDO}' bash -s" <<'EOF'
-set -euo pipefail
-cd "$DEPLOY_DIR"
-tar -xzf "$ARTIFACT_TAR"
-RELEASE_DIR="$(tar -tzf "$ARTIFACT_TAR" | cut -d/ -f1 | sed -n '1p')"
-if [ -z "$RELEASE_DIR" ]; then
-  echo 'failed to detect release dir from tarball'
-  exit 1
-fi
-cd "$RELEASE_DIR"
+echo "==> [${host}] scp archive -> ${deployDir}"
+scp \$SCP_OPTS "${deploySrc}" ${deployUser}@${host}:${deployDir}/
 
-if [ "$USE_SUDO" = "true" ]; then
-  SUDO_CMD='sudo'
-else
-  SUDO_CMD=''
-fi
+                echo "==> [${host}] extract + install + restart"
+                ssh \$SSH_OPTS ${deployUser}@${host} "set -e
+  if [ '${params.USE_SUDO}' = 'true' ]; then
+    SUDO_CMD='sudo'
+  else
+    SUDO_CMD=''
+  fi
+  cd '${deployDir}'
+  tar -xzf '${env.ARCHIVE_NAME}'
+  RELEASE_DIR=\$(tar -tzf '${env.ARCHIVE_NAME}' | cut -d/ -f1 | sed -n '1p')
+  test -n \"\$RELEASE_DIR\"
+  cd \"\$RELEASE_DIR\"
+  \$SUDO_CMD make install CONFIG_SRC=config.yaml
+  \$SUDO_CMD systemctl daemon-reload
+  \$SUDO_CMD systemctl restart '${remoteService}'
+  \$SUDO_CMD systemctl is-active --quiet '${remoteService}'
+"
 
-$SUDO_CMD make install CONFIG_SRC=config.yaml
-$SUDO_CMD systemctl restart "$REMOTE_SERVICE"
-$SUDO_CMD systemctl is-active --quiet "$REMOTE_SERVICE"
-EOF
-
-echo '==> [${host}] done'
+echo "==> [${host}] done"
 """
               }
             }
@@ -412,12 +351,8 @@ echo '==> [${host}] done'
           }
 
           sh """
-            set -euo pipefail
+            set -e
             test -f "${env.ARCHIVE_SRC}"
-
-            echo '=== upload archive ==='
-            ls -al "${env.ARCHIVE_SRC}"
-            du -h "${env.ARCHIVE_SRC}"
 
             curl --fail --show-error --silent \
               -u "${env.JFROG_USER}:${env.JFROG_PASS}" \
