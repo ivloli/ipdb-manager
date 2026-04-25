@@ -7,48 +7,6 @@ pipeline {
     timestamps()
   }
 
-  parameters {
-    choice(name: 'ACTION', choices: ['Release', 'Rollback'], description: 'Deploy mode： Release发版，Rollback 回滚')
-
-    gitParameter(
-      name: 'GIT_REF',
-      type: 'PT_BRANCH_TAG',
-      defaultValue: 'main',
-      branchFilter: 'origin/(.*)',
-      sortMode: 'DESCENDING_SMART',
-      selectedValue: 'DEFAULT',
-      useRepository: 'git@gitlab.gainetics.io:backend-cdn/dns-prj/ipdb_manager.git',
-      quickFilterEnabled: true
-    )
-
-    extendedChoice(
-      name: 'TARGET_IP',
-      description: '选择部署的节点IP（可多选，支持 ip 或 ip:port）',
-      type: 'PT_MULTI_SELECT',
-      value: '18.163.97.144',
-      defaultValue: '18.163.97.144',
-      multiSelectDelimiter: ',',
-      visibleItemCount: 5
-    )
-
-    text(
-      name: 'CONFIG_YAML',
-      defaultValue: '',
-      description: '仅 Release 使用：会写入离线包里的 config.yaml 内容'
-    )
-
-    string(
-      name: 'ROLLBACK_ARTIFACT',
-      defaultValue: '',
-      description: '仅 Rollback 使用，例如 ipdb-manager-offline-linux-amd64-v3.tar.gz'
-    )
-
-    string(name: 'TARGET_OS', defaultValue: 'linux', description: 'release package target OS')
-    string(name: 'TARGET_ARCH', defaultValue: 'amd64', description: 'release package target ARCH')
-    string(name: 'RELEASE_TAG', defaultValue: '', description: '可选，空则自动生成')
-    booleanParam(name: 'USE_SUDO', defaultValue: true, description: '目标机安装与重启是否使用 sudo')
-  }
-
   environment {
     APP_NAME = "${env.APP_NAME ?: 'ipdb-manager'}"
 
