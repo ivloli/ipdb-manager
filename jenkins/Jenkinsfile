@@ -312,22 +312,22 @@ echo "==> [${host}] extract + install + restart"
 ssh \$SSH_OPTS ${deployUser}@${host} "DEPLOY_DIR='${deployDir}' ARTIFACT_TAR='${env.ARCHIVE_NAME}' REMOTE_SERVICE='${remoteService}' USE_SUDO='${params.USE_SUDO}' bash -s" <<'EOF'
 set -euo pipefail
 
-if [ "$USE_SUDO" = "true" ]; then
+if [ "\$USE_SUDO" = "true" ]; then
   SUDO_CMD='sudo'
 else
   SUDO_CMD=''
 fi
 
-cd "$DEPLOY_DIR"
-tar -xzf "$ARTIFACT_TAR"
-RELEASE_DIR="$(tar -tzf "$ARTIFACT_TAR" | cut -d/ -f1 | sed -n '1p')"
-test -n "$RELEASE_DIR"
-cd "$RELEASE_DIR"
+cd "\$DEPLOY_DIR"
+tar -xzf "\$ARTIFACT_TAR"
+RELEASE_DIR="\$(tar -tzf "\$ARTIFACT_TAR" | cut -d/ -f1 | sed -n '1p')"
+test -n "\$RELEASE_DIR"
+cd "\$RELEASE_DIR"
 
-$SUDO_CMD make install CONFIG_SRC=config.yaml
-$SUDO_CMD systemctl daemon-reload
-$SUDO_CMD systemctl restart "$REMOTE_SERVICE"
-$SUDO_CMD systemctl is-active --quiet "$REMOTE_SERVICE"
+\$SUDO_CMD make install CONFIG_SRC=config.yaml
+\$SUDO_CMD systemctl daemon-reload
+\$SUDO_CMD systemctl restart "\$REMOTE_SERVICE"
+\$SUDO_CMD systemctl is-active --quiet "\$REMOTE_SERVICE"
 EOF
 
 echo "==> [${host}] done"
