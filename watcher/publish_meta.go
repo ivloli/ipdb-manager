@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,21 +27,6 @@ type ip2regionMeta struct {
 	XDBSHA256   string `json:"xdb_sha256"`
 	XDBAuthUser string `json:"xdb_auth_user,omitempty"`
 }
-
-type ip2regionMetaDoc struct {
-	Version         string                   `json:"version"`
-	XDBURL          string                   `json:"xdb_url"`
-	XDBSHA256       string                   `json:"xdb_sha256"`
-	XDBAuthUser     string                   `json:"xdb_auth_user,omitempty"`
-	ArtifactsByUser map[string]ip2regionMeta `json:"artifacts_by_user,omitempty"`
-	DefaultUser     string                   `json:"default_user,omitempty"`
-}
-
-const (
-	metaPublishMaxRetry   = 5
-	metaPublishBackoffMin = 50 * time.Millisecond
-	metaPublishBackoffMax = 200 * time.Millisecond
-)
 
 func (w *VersionWatcher) publishIP2RegionMeta(targets []syncTarget, version string) error {
 	if len(w.NacosTargets) == 0 {
@@ -142,100 +126,23 @@ func publishOneFamily(version string, st syncTarget, nacosTarget config.NacosTar
 	}
 
 	payload := ip2regionMeta{Version: version, XDBURL: artifactURL, XDBSHA256: sha, XDBAuthUser: authUser}
-	if err := publishMetaWithCAS(nacosClient, ref.DataID, ref.Group, payload, authUser); err != nil {
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("family=%s marshal meta: %w", st.name, err)
+	}
+	ok, err := nacosClient.PublishConfig(vo.ConfigParam{
+		DataId:  ref.DataID,
+		Group:   ref.Group,
+		Content: string(b),
+	})
+	if err != nil {
 		return fmt.Errorf("family=%s publish nacos %s/%s: %w", st.name, ref.Group, ref.DataID, err)
+	}
+	if !ok {
+		return fmt.Errorf("family=%s publish nacos %s/%s returned false", st.name, ref.Group, ref.DataID)
 	}
 	log.Printf("[watcher] published ip2region_meta target=%s family=%s version=%s url=%s", nacosTarget.ID, st.name, version, artifactURL)
 	return nil
-}
-
-func publishMetaWithCAS(nacosClient config_client.IConfigClient, dataID, group string, payload ip2regionMeta, authUser string) error {
-	userKey := strings.TrimSpace(authUser)
-	if userKey == "" {
-		userKey = "token"
-	}
-
-	var lastErr error
-	for attempt := 1; attempt <= metaPublishMaxRetry; attempt++ {
-		currentContent, currentMD5, err := loadConfigContentAndMD5(nacosClient, dataID, group)
-		if err != nil {
-			return err
-		}
-
-		nextContent, err := buildMergedMetaContent(currentContent, payload, userKey)
-		if err != nil {
-			return err
-		}
-
-		ok, err := nacosClient.PublishConfig(vo.ConfigParam{
-			DataId:  dataID,
-			Group:   group,
-			Content: nextContent,
-			CasMd5:  currentMD5,
-		})
-		if err == nil && ok {
-			return nil
-		}
-
-		if err != nil {
-			lastErr = err
-		} else {
-			lastErr = fmt.Errorf("publish returned false")
-		}
-
-		if attempt < metaPublishMaxRetry {
-			jitter := metaPublishBackoffMin + time.Duration(rand.Intn(int(metaPublishBackoffMax-metaPublishBackoffMin)+1))
-			time.Sleep(jitter)
-		}
-	}
-
-	return fmt.Errorf("cas publish retry exhausted: %w", lastErr)
-}
-
-func loadConfigContentAndMD5(nacosClient config_client.IConfigClient, dataID, group string) (content string, md5 string, err error) {
-	page, err := nacosClient.SearchConfig(vo.SearchConfigParam{
-		Search:   "accurate",
-		DataId:   dataID,
-		Group:    group,
-		PageNo:   1,
-		PageSize: 1,
-	})
-	if err != nil {
-		return "", "", err
-	}
-	if page == nil || len(page.PageItems) == 0 {
-		return "", "", nil
-	}
-	item := page.PageItems[0]
-	return item.Content, item.Md5, nil
-}
-
-func buildMergedMetaContent(current string, payload ip2regionMeta, userKey string) (string, error) {
-	doc := ip2regionMetaDoc{}
-	current = strings.TrimSpace(current)
-	if current != "" {
-		if err := json.Unmarshal([]byte(current), &doc); err != nil {
-			return "", fmt.Errorf("unmarshal existing meta: %w", err)
-		}
-	}
-
-	doc.Version = payload.Version
-	doc.XDBURL = payload.XDBURL
-	doc.XDBSHA256 = payload.XDBSHA256
-	doc.XDBAuthUser = payload.XDBAuthUser
-	if userKey != "" {
-		if doc.ArtifactsByUser == nil {
-			doc.ArtifactsByUser = make(map[string]ip2regionMeta)
-		}
-		doc.ArtifactsByUser[userKey] = payload
-		doc.DefaultUser = userKey
-	}
-
-	b, err := json.Marshal(doc)
-	if err != nil {
-		return "", fmt.Errorf("marshal merged meta: %w", err)
-	}
-	return string(b), nil
 }
 
 func selectTargetFamilyConfig(family string, t config.NacosTargetConfig) (string, config.NacosPublishMetaRef) {
