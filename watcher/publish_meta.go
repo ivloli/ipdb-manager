@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"net/url"
 	"os"
 	"path"
@@ -74,7 +73,7 @@ func (w *VersionWatcher) publishOneTarget(targets []syncTarget, version string, 
 		return err
 	}
 	artifactClient, err := artifact.NewClient(repo, repoCreds, artifact.FactoryOptions{
-		HTTPClient: &http.Client{Timeout: 90 * time.Second},
+		HTTPClient: w.getArtifactHTTPClient(),
 	})
 	if err != nil {
 		return err
@@ -85,7 +84,7 @@ func (w *VersionWatcher) publishOneTarget(targets []syncTarget, version string, 
 	if nacosUser == "" || nacosPass == "" {
 		return fmt.Errorf("nacos auth env not set: username_ref=%s password_ref=%s", nacosTarget.Auth.UsernameRef, nacosTarget.Auth.PasswordRef)
 	}
-	nacosClient, err := newNacosConfigClient(nacosTarget.ServerAddr, nacosTarget.Namespace, nacosUser, nacosPass)
+	nacosClient, err := w.getOrCreateTargetNacosClient(nacosTarget.ServerAddr, nacosTarget.Namespace, nacosUser, nacosPass)
 	if err != nil {
 		return err
 	}

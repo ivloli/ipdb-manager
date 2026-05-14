@@ -48,7 +48,10 @@ type VersionWatcher struct {
 	ArtifactRepos []config.ArtifactRepoConfig
 	NacosTargets  []config.NacosTargetConfig
 
-	mu sync.Mutex
+	mu                 sync.Mutex
+	githubHTTPClient   *http.Client
+	artifactHTTPClient *http.Client
+	targetNacosClients map[string]config_client.IConfigClient
 }
 
 type syncTarget struct {
@@ -120,12 +123,7 @@ func (w *VersionWatcher) checkAndUpdateLocked(trigger string) error {
 	}
 	log.Printf("[watcher] reconcile trigger=%s", trigger)
 
-	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
+	httpClient := w.getGitHubHTTPClient()
 
 	// 1. Fetch latest GitHub release tag.
 	rel, err := w.fetchLatestRelease(httpClient)
@@ -212,6 +210,41 @@ func (w *VersionWatcher) checkAndUpdateLocked(trigger string) error {
 	}
 	log.Printf("[watcher] missing data sync complete at version: %s", latestTag)
 	return nil
+}
+
+func (w *VersionWatcher) getGitHubHTTPClient() *http.Client {
+	if w.githubHTTPClient == nil {
+		w.githubHTTPClient = &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		}
+	}
+	return w.githubHTTPClient
+}
+
+func (w *VersionWatcher) getArtifactHTTPClient() *http.Client {
+	if w.artifactHTTPClient == nil {
+		w.artifactHTTPClient = &http.Client{Timeout: 90 * time.Second}
+	}
+	return w.artifactHTTPClient
+}
+
+func (w *VersionWatcher) getOrCreateTargetNacosClient(addr, namespace, username, password string) (config_client.IConfigClient, error) {
+	if w.targetNacosClients == nil {
+		w.targetNacosClients = make(map[string]config_client.IConfigClient)
+	}
+	key := strings.Join([]string{addr, namespace, username, password}, "|")
+	if client, ok := w.targetNacosClients[key]; ok {
+		return client, nil
+	}
+	client, err := newNacosConfigClient(addr, namespace, username, password)
+	if err != nil {
+		return nil, err
+	}
+	w.targetNacosClients[key] = client
+	return client, nil
 }
 
 func newNacosConfigClient(addr, namespace, username, password string) (config_client.IConfigClient, error) {
