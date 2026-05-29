@@ -1,5 +1,5 @@
 nacos:
-  addr: "120.25.74.229:8848"
+  addr: "120.25.74.229:18848"
   namespace: "scloud-prod"
   group: "subnet_mapping"
   data_id: "subnet_map"
@@ -34,7 +34,7 @@ artifact_repos:
     enabled: true
 nacos_targets:
   - id: probe_dev_target
-    server_addr: "120.25.74.229:8848"
+    server_addr: "120.25.74.229:18848"
     namespace: "scloud-prod"
     auth:
       username_ref: "scloud-admin"
