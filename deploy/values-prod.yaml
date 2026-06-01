@@ -1,0 +1,81 @@
+replicaCount: 2
+
+image:
+  repository: harbor.gainetics.io/scloud/ipdb-manager
+  pullPolicy: IfNotPresent
+  tag: ""  # Overridden by CI --set image.tag=xxx
+
+service:
+  type: ClusterIP
+  port: 9090
+
+nlb:
+  enabled: true
+  port: 9090
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 15
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 3
+  periodSeconds: 10
+
+env:
+  - name: PG_DSN
+    valueFrom:
+      secretKeyRef:
+        name: ipdb-manager-secrets
+        key: pg-dsn
+  - name: NACOS_ADDR
+    value: "nacos.scloud-common-dev.svc.cluster.local:8848"
+  - name: NACOS_USERNAME
+    valueFrom:
+      secretKeyRef:
+        name: ipdb-manager-secrets
+        key: nacos-username
+  - name: NACOS_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: ipdb-manager-secrets
+        key: nacos-password
+
+configMap:
+  enabled: true
+  mountPath: /etc/ipdb-manager
+  data:
+    config.yaml: |
+      nacos:
+        addr: "${NACOS_ADDR}"
+        namespace: ""
+        username: "${NACOS_USERNAME}"
+        password: "${NACOS_PASSWORD}"
+      ip2region:
+        dir: "/var/lib/ipdb-manager/ip2region"
+        poll_interval: "1h"
+      api:
+        listen: ":9090"
+        token: ""
+      node_status:
+        persist: true
+        persist_driver: "pg"
+        persist_dsn: "${PG_DSN}"
+        cleanup_interval: "1h"
+        cleanup_ttl: "168h"

@@ -16,6 +16,16 @@ type Config struct {
 	LocalState    LocalStateConfig     `yaml:"local_state"`
 	ArtifactRepos []ArtifactRepoConfig `yaml:"artifact_repos"`
 	NacosTargets  []NacosTargetConfig  `yaml:"nacos_targets"`
+	NodeStatus    NodeStatusConfig     `yaml:"node_status"`
+}
+
+type NodeStatusConfig struct {
+	Persist         bool          `yaml:"persist"`
+	PersistDriver   string        `yaml:"persist_driver"`
+	PersistDSN      string        `yaml:"persist_dsn"`
+	PersistInterval time.Duration `yaml:"persist_interval"`
+	CleanupInterval time.Duration `yaml:"cleanup_interval"`
+	CleanupTTL      time.Duration `yaml:"cleanup_ttl"`
 }
 
 type NacosConfig struct {
@@ -157,6 +167,23 @@ func (c *Config) validate() error {
 	}
 	if c.API.Listen == "" {
 		c.API.Listen = ":9090"
+	}
+	if c.NodeStatus.Persist {
+		if c.NodeStatus.PersistDriver == "" {
+			c.NodeStatus.PersistDriver = "pg"
+		}
+		if c.NodeStatus.PersistInterval <= 0 {
+			c.NodeStatus.PersistInterval = 10 * time.Second
+		}
+		if c.NodeStatus.CleanupInterval <= 0 {
+			c.NodeStatus.CleanupInterval = time.Hour
+		}
+		if c.NodeStatus.CleanupTTL <= 0 {
+			c.NodeStatus.CleanupTTL = 7 * 24 * time.Hour
+		}
+		if c.NodeStatus.PersistDSN == "" {
+			return fmt.Errorf("node_status.persist_dsn is required when persist=true")
+		}
 	}
 	seenRepoID := map[string]struct{}{}
 	for i := range c.ArtifactRepos {

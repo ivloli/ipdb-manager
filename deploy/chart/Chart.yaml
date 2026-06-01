@@ -1,0 +1,6 @@
+apiVersion: v2
+name: go-service
+description: A generic Helm chart for Go microservices
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	"ipdb-manager/api"
 	"ipdb-manager/config"
+	"ipdb-manager/store"
 	"ipdb-manager/watcher"
 )
 
@@ -54,6 +56,32 @@ func main() {
 		log.Fatalf("init nacos client: %v", err)
 	}
 
+	// Initialize PG store if configured.
+	var pgStore *store.PGStore
+	if cfg.NodeStatus.Persist {
+		pgStore, err = store.NewPGStore(context.Background(), cfg.NodeStatus.PersistDSN)
+		if err != nil {
+			log.Fatalf("init pg store: %v", err)
+		}
+		if err := pgStore.Migrate(context.Background()); err != nil {
+			log.Fatalf("pg migrate: %v", err)
+		}
+		defer pgStore.Close()
+
+		go func() {
+			ticker := time.NewTicker(cfg.NodeStatus.CleanupInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				n, err := pgStore.CleanupExpired(context.Background(), cfg.NodeStatus.CleanupTTL)
+				if err != nil {
+					log.Printf("[store] cleanup error: %v", err)
+				} else if n > 0 {
+					log.Printf("[store] cleaned up %d expired records", n)
+				}
+			}
+		}()
+	}
+
 	w := &watcher.VersionWatcher{
 		TXTPath:       cfg.IP2Region.TXTPath,
 		XDBPath:       cfg.IP2Region.XDBPath,
@@ -73,9 +101,12 @@ func main() {
 	}
 
 	apiServer := &api.Server{
-		ListenAddr: cfg.API.Listen,
-		Token:      cfg.API.Token,
-		Watcher:    w,
+		ListenAddr:  cfg.API.Listen,
+		Token:       cfg.API.Token,
+		Watcher:     w,
+		Store:       pgStore,
+		NacosClient: nacosClient,
+		Cfg:         cfg,
 	}
 	go func() {
 		if err := apiServer.Start(); err != nil {

@@ -129,6 +129,8 @@ func publishOneFamily(version string, st syncTarget, nacosTarget config.NacosTar
 	if err != nil {
 		return fmt.Errorf("family=%s marshal meta: %w", st.name, err)
 	}
+
+	// Publish to legacy dataId (backward compat for agents not yet on goal mode).
 	ok, err := nacosClient.PublishConfig(vo.ConfigParam{
 		DataId:  ref.DataID,
 		Group:   ref.Group,
@@ -140,6 +142,21 @@ func publishOneFamily(version string, st syncTarget, nacosTarget config.NacosTar
 	if !ok {
 		return fmt.Errorf("family=%s publish nacos %s/%s returned false", st.name, ref.Group, ref.DataID)
 	}
+
+	// Publish to versioned dataId (immutable per version, used by goal-based agents).
+	versionedDataID := ref.DataID + "_" + version
+	ok, err = nacosClient.PublishConfig(vo.ConfigParam{
+		DataId:  versionedDataID,
+		Group:   ref.Group,
+		Content: string(b),
+	})
+	if err != nil {
+		return fmt.Errorf("family=%s publish nacos %s/%s: %w", st.name, ref.Group, versionedDataID, err)
+	}
+	if !ok {
+		return fmt.Errorf("family=%s publish nacos %s/%s returned false", st.name, ref.Group, versionedDataID)
+	}
+
 	log.Printf("[watcher] published ip2region_meta target=%s family=%s version=%s url=%s", nacosTarget.ID, st.name, version, artifactURL)
 	return nil
 }

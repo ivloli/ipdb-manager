@@ -1,0 +1,126 @@
+// ipdb-manager K8S deployment pipeline
+// Flow: Test → Docker Build → Push Harbor → Helm Deploy to EKS
+//
+// Required Jenkins parameters:
+//   GIT_REF      - branch or tag to build (default: main)
+//   RELEASE_TAG  - version label, e.g. v1.0.0 (optional, defaults to git describe)
+//
+// Required Jenkins credentials:
+//   deploy_01              - Git SSH key
+//   harbor-push            - Harbor username/password
+//   eks-ap-east-1-kubeconfig - kubeconfig file for EKS cluster
+
+pipeline {
+  agent any
+
+  options {
+    buildDiscarder(logRotator(numToKeepStr: '15'))
+    disableConcurrentBuilds()
+    timestamps()
+  }
+
+  environment {
+    APP_NAME        = 'ipdb-manager'
+    HARBOR_REGISTRY = 'harbor.gainetics.io'
+    HARBOR_PROJECT  = 'scloud'
+    IMAGE_REPO      = "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${APP_NAME}"
+
+    GIT_CREDENTIALS_ID = 'deploy_01'
+    REPOSITORY_URL     = 'git@gitlab.gainetics.io:backend-cdn/dns-prj/ipdb_manager.git'
+
+    HARBOR_CRED_ID     = 'harbor-push'
+    KUBECONFIG_CRED_ID = 'eks-ap-east-1-kubeconfig'
+
+    HELM_RELEASE   = 'ipdb-manager'
+    HELM_NAMESPACE = 'scloud-dnps-dev'
+
+    PATH = "/usr/local/go/bin:${env.PATH}"
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        script {
+          def ref = (params.GIT_REF ?: 'main').trim()
+          checkout([
+            $class: 'GitSCM',
+            branches: [[name: ref]],
+            userRemoteConfigs: [[
+              url: env.REPOSITORY_URL,
+              credentialsId: env.GIT_CREDENTIALS_ID
+            ]],
+            extensions: [
+              [$class: 'CloneOption', shallow: false, noTags: false, timeout: 10],
+              [$class: 'CleanBeforeCheckout']
+            ]
+          ])
+          env.GIT_COMMIT_SHORT = sh(script: 'git rev-parse --short=8 HEAD', returnStdout: true).trim()
+          env.BUILD_TS = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
+          env.RELEASE_TAG_EFFECTIVE = (params.RELEASE_TAG ?: '').trim() ?: sh(script: 'git describe --always --tags 2>/dev/null || echo dev', returnStdout: true).trim()
+        }
+      }
+    }
+
+    stage('Test') {
+      steps {
+        sh 'make test'
+      }
+    }
+
+    stage('Build & Push Image') {
+      steps {
+        script {
+          env.IMAGE_TAG = "${env.RELEASE_TAG_EFFECTIVE}-${env.GIT_COMMIT_SHORT}-${env.BUILD_TS}"
+          env.FULL_IMAGE = "${env.IMAGE_REPO}:${env.IMAGE_TAG}"
+
+          withCredentials([usernamePassword(
+            credentialsId: env.HARBOR_CRED_ID,
+            usernameVariable: 'HARBOR_USER',
+            passwordVariable: 'HARBOR_PASS'
+          )]) {
+            sh """#!/usr/bin/env bash
+set -euo pipefail
+echo "\$HARBOR_PASS" | docker login "${env.HARBOR_REGISTRY}" -u "\$HARBOR_USER" --password-stdin
+docker build -t "${env.FULL_IMAGE}" .
+docker push "${env.FULL_IMAGE}"
+docker logout "${env.HARBOR_REGISTRY}" || true
+"""
+          }
+          echo "Pushed image: ${env.FULL_IMAGE}"
+        }
+      }
+    }
+
+    stage('Helm Deploy') {
+      steps {
+        script {
+          withCredentials([file(credentialsId: env.KUBECONFIG_CRED_ID, variable: 'KUBECONFIG')]) {
+            sh """#!/usr/bin/env bash
+set -euo pipefail
+export KUBECONFIG="\$KUBECONFIG"
+
+helm upgrade --install "${env.HELM_RELEASE}" ./deploy/chart \
+  --namespace "${env.HELM_NAMESPACE}" \
+  --create-namespace \
+  --values deploy/values-prod.yaml \
+  --set image.tag="${env.IMAGE_TAG}" \
+  --wait --timeout 5m
+
+kubectl -n "${env.HELM_NAMESPACE}" rollout status deployment/${env.HELM_RELEASE} --timeout=3m
+"""
+          }
+          echo "Deployed ${env.HELM_RELEASE} with image ${env.FULL_IMAGE}"
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      echo "Pipeline success! image=${env.FULL_IMAGE ?: 'N/A'}"
+    }
+    failure {
+      echo 'Pipeline failed, please check logs.'
+    }
+  }
+}
