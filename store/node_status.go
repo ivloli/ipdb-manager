@@ -19,9 +19,9 @@ type NodeStatus struct {
 
 func (s *PGStore) UpsertNodeStatus(ctx context.Context, ns NodeStatus) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO node_status (agent_id, system, last_seen_at, goal_version, current_version, status, last_error)
-		VALUES ($1, $2, NOW(), $3, $4, $5, $6)
-		ON CONFLICT (agent_id) DO UPDATE SET
+		INSERT INTO node_status (agent_id, system, last_seen_at, goal_version, current_version, status, last_error, deleted_at)
+		VALUES ($1, $2, NOW(), $3, $4, $5, $6, 0)
+		ON CONFLICT (agent_id, deleted_at) DO UPDATE SET
 			system = EXCLUDED.system,
 			last_seen_at = NOW(),
 			goal_version = EXCLUDED.goal_version,
@@ -37,10 +37,11 @@ func (s *PGStore) UpsertNodeStatus(ctx context.Context, ns NodeStatus) error {
 }
 
 func (s *PGStore) ListNodeStatus(ctx context.Context, system string) ([]NodeStatus, error) {
-	query := `SELECT agent_id, system, last_seen_at, goal_version, current_version, status, last_error, created_at FROM node_status`
+	query := `SELECT agent_id, system, last_seen_at, goal_version, current_version, status, last_error, created_at
+		FROM node_status WHERE deleted_at = 0`
 	args := []any{}
 	if system != "" {
-		query += ` WHERE system = $1`
+		query += ` AND system = $1`
 		args = append(args, system)
 	}
 	query += ` ORDER BY last_seen_at DESC`
@@ -63,7 +64,12 @@ func (s *PGStore) ListNodeStatus(ctx context.Context, system string) ([]NodeStat
 }
 
 func (s *PGStore) CleanupExpired(ctx context.Context, ttl time.Duration) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM node_status WHERE last_seen_at < NOW() - $1::interval`, ttl.String())
+	now := time.Now().Unix()
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE node_status SET deleted_at = $1
+		WHERE deleted_at = 0 AND last_seen_at < NOW() - $2::interval`,
+		now, ttl.String(),
+	)
 	if err != nil {
 		return 0, fmt.Errorf("cleanup node_status: %w", err)
 	}

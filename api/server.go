@@ -17,6 +17,7 @@ import (
 type Server struct {
 	ListenAddr  string
 	Token       string
+	PodID       string
 	Watcher     *watcher.VersionWatcher
 	Store       *store.PGStore
 	NacosClient config_client.IConfigClient
@@ -45,6 +46,9 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/v1/xdb/versions", s.handleXDBVersions)
 	mux.HandleFunc("/api/v1/xdb/target", s.handleXDBTarget)
 	mux.HandleFunc("/api/v1/xdb/rollback", s.handleXDBRollback)
+	mux.HandleFunc("/api/v1/xdb/reconcile/tag", s.handleReconcileTag)
+	mux.HandleFunc("/api/v1/xdb/status", s.handleXDBStatus)
+	mux.HandleFunc("/api/v1/submap/current", s.handleSubmapCurrent)
 	mux.HandleFunc("/api/v1/submap/publish", s.handleSubmapPublish)
 	mux.HandleFunc("/api/v1/submap/rollback", s.handleSubmapRollback)
 

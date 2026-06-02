@@ -13,7 +13,6 @@ type Config struct {
 	IP2Region     IP2RegionConfig      `yaml:"ip2region"`
 	API           APIConfig            `yaml:"api"`
 	Scheduler     SchedulerConfig      `yaml:"scheduler"`
-	LocalState    LocalStateConfig     `yaml:"local_state"`
 	ArtifactRepos []ArtifactRepoConfig `yaml:"artifact_repos"`
 	NacosTargets  []NacosTargetConfig  `yaml:"nacos_targets"`
 	NodeStatus    NodeStatusConfig     `yaml:"node_status"`
@@ -39,14 +38,15 @@ type NacosConfig struct {
 }
 
 type IP2RegionConfig struct {
-	Dir          string        `yaml:"dir"`
-	TXTPath      string        `yaml:"txt_path"`
-	XDBPath      string        `yaml:"xdb_path"`
-	TXTPathV6    string        `yaml:"txt_v6_path"`
-	XDBPathV6    string        `yaml:"xdb_v6_path"`
-	PollInterval time.Duration `yaml:"poll_interval"`
-	GithubToken  string        `yaml:"github_token"`
-	ReleasesURL  string        `yaml:"releases_url"`
+	Dir             string        `yaml:"dir"`
+	TXTPath         string        `yaml:"txt_path"`
+	XDBPath         string        `yaml:"xdb_path"`
+	TXTPathV6       string        `yaml:"txt_v6_path"`
+	XDBPathV6       string        `yaml:"xdb_v6_path"`
+	PollInterval    time.Duration `yaml:"poll_interval"`
+	DownloadTimeout time.Duration `yaml:"download_timeout"`
+	GithubToken     string        `yaml:"github_token"`
+	ReleasesURL     string        `yaml:"releases_url"`
 }
 
 type APIConfig struct {
@@ -56,11 +56,6 @@ type APIConfig struct {
 
 type SchedulerConfig struct {
 	Cron string `yaml:"cron"`
-}
-
-type LocalStateConfig struct {
-	UpstreamReleaseTagFile string `yaml:"upstream_release_tag_file"`
-	LegacyVersionFile      string `yaml:"legacy_version_file"`
 }
 
 type ArtifactRepoConfig struct {
@@ -156,14 +151,11 @@ func (c *Config) validate() error {
 	if c.IP2Region.PollInterval <= 0 {
 		c.IP2Region.PollInterval = time.Hour
 	}
+	if c.IP2Region.DownloadTimeout <= 0 {
+		c.IP2Region.DownloadTimeout = 300 * time.Second
+	}
 	if c.IP2Region.ReleasesURL == "" {
 		c.IP2Region.ReleasesURL = "https://api.github.com/repos/lionsoul2014/ip2region/releases/latest"
-	}
-	if c.LocalState.UpstreamReleaseTagFile == "" {
-		c.LocalState.UpstreamReleaseTagFile = c.IP2Region.Dir + "/.upstream_release_tag"
-	}
-	if c.LocalState.LegacyVersionFile == "" {
-		c.LocalState.LegacyVersionFile = c.IP2Region.Dir + "/.version"
 	}
 	if c.API.Listen == "" {
 		c.API.Listen = ":9090"

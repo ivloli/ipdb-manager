@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -83,26 +84,26 @@ func main() {
 	}
 
 	w := &watcher.VersionWatcher{
-		TXTPath:       cfg.IP2Region.TXTPath,
-		XDBPath:       cfg.IP2Region.XDBPath,
-		TXTPathV6:     cfg.IP2Region.TXTPathV6,
-		XDBPathV6:     cfg.IP2Region.XDBPathV6,
-		VersionFile:   cfg.LocalState.UpstreamReleaseTagFile,
-		LegacyVersion: cfg.LocalState.LegacyVersionFile,
-		PollInterval:  cfg.IP2Region.PollInterval,
-		GithubToken:   cfg.IP2Region.GithubToken,
-		ReleasesURL:   cfg.IP2Region.ReleasesURL,
-		NacosClient:   nacosClient,
-		NacosGroup:    cfg.Nacos.Group,
-		NacosDataID:   cfg.Nacos.DataID,
-		NacosDataIDV6: cfg.Nacos.DataIDV6,
-		ArtifactRepos: cfg.ArtifactRepos,
-		NacosTargets:  cfg.NacosTargets,
+		TXTPath:         cfg.IP2Region.TXTPath,
+		XDBPath:         cfg.IP2Region.XDBPath,
+		TXTPathV6:       cfg.IP2Region.TXTPathV6,
+		XDBPathV6:       cfg.IP2Region.XDBPathV6,
+		PollInterval:    cfg.IP2Region.PollInterval,
+		DownloadTimeout: cfg.IP2Region.DownloadTimeout,
+		GithubToken:     cfg.IP2Region.GithubToken,
+		ReleasesURL:     cfg.IP2Region.ReleasesURL,
+		NacosClient:     nacosClient,
+		NacosGroup:      cfg.Nacos.Group,
+		NacosDataID:     cfg.Nacos.DataID,
+		NacosDataIDV6:   cfg.Nacos.DataIDV6,
+		ArtifactRepos:   cfg.ArtifactRepos,
+		NacosTargets:    cfg.NacosTargets,
 	}
 
 	apiServer := &api.Server{
 		ListenAddr:  cfg.API.Listen,
 		Token:       cfg.API.Token,
+		PodID:       podID(),
 		Watcher:     w,
 		Store:       pgStore,
 		NacosClient: nacosClient,
@@ -121,8 +122,8 @@ func main() {
 		return
 	}
 
-	log.Printf("ipdb-manager starting poll mode (poll_interval=%s, nacos=%s, release_tag_file=%s)",
-		cfg.IP2Region.PollInterval, cfg.Nacos.Addr, cfg.LocalState.UpstreamReleaseTagFile)
+	log.Printf("ipdb-manager starting poll mode (poll_interval=%s, nacos=%s, download_timeout=%s)",
+		cfg.IP2Region.PollInterval, cfg.Nacos.Addr, cfg.IP2Region.DownloadTimeout)
 	w.Start() // blocks forever
 }
 
@@ -160,4 +161,14 @@ func splitHostPort(addr string) (host string, port uint64) {
 		port = p
 	}
 	return
+}
+
+func podID() string {
+	if h := os.Getenv("HOSTNAME"); h != "" {
+		return h
+	}
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return fmt.Sprintf("pod-%d", time.Now().UnixNano()%100000)
 }

@@ -1,9 +1,13 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
+
+	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 
 	"ipdb-manager/goal"
 )
@@ -17,8 +21,43 @@ func (s *Server) handleXDBVersions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
-	// TODO: list known versions from Nacos or local state
-	writeJSON(w, http.StatusOK, map[string]any{"versions": []string{}})
+
+	resp := map[string]any{}
+
+	// Get current live version from Nacos subnet_map_meta.
+	if s.NacosClient != nil && s.Cfg != nil {
+		metaDataID := s.Cfg.Nacos.DataID + "_meta"
+		content, err := s.NacosClient.GetConfig(vo.ConfigParam{
+			DataId: metaDataID,
+			Group:  s.Cfg.Nacos.Group,
+		})
+		if err == nil && strings.TrimSpace(content) != "" {
+			var meta struct {
+				Version   string `json:"version"`
+				UpdatedAt string `json:"updated_at"`
+			}
+			if json.Unmarshal([]byte(content), &meta) == nil {
+				resp["current_version"] = meta.Version
+				resp["current_updated_at"] = meta.UpdatedAt
+			}
+		}
+	}
+
+	// List known versions from reconcile_task table (done/failed).
+	if s.Store != nil {
+		versions, err := s.Store.ListReconcileVersions(context.Background())
+		if err != nil {
+			log.Printf("[api] list reconcile versions: %v", err)
+		} else {
+			resp["versions"] = versions
+		}
+	}
+
+	if resp["versions"] == nil {
+		resp["versions"] = []string{}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleXDBTarget(w http.ResponseWriter, r *http.Request) {
