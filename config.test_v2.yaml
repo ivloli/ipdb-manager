@@ -1,5 +1,5 @@
 nacos:
-  addr: "172.17.0.2:8848"
+  addr: "120.25.74.229:18848"
   namespace: "scloud-prod"
   group: "subnet_mapping"
   data_id: "subnet_map"
@@ -19,7 +19,7 @@ ip2region:
   releases_url: "https://api.github.com/repos/lionsoul2014/ip2region/releases/latest"
 
 api:
-  listen: ":9090"
+  listen: ":39191"
   token: "${IPDB_MANAGER_API_TOKEN}"
 
 scheduler:
@@ -28,7 +28,7 @@ scheduler:
 node_status:
   persist: true
   persist_driver: "pg"
-  persist_dsn: "postgres://ipdb:yourpassword@172.17.0.3:5432/ipdb_manager?sslmode=disable"
+  persist_dsn: "postgres://ipdb_manager:B87nSmvIyHhgbUILPWVbTaGW@10.0.25.221:5432/ipdb_manager?sslmode=disable"
   persist_interval: "10s"
   cleanup_interval: "1h"
   cleanup_ttl: "168h"
@@ -45,7 +45,7 @@ artifact_repos:
 
 nacos_targets:
   - id: probe_dev_target
-    server_addr: "172.17.0.2:8848"
+    server_addr: "120.25.74.229:18848"
     namespace: "scloud-prod"
     auth:
       username_ref: "scloud-admin"
