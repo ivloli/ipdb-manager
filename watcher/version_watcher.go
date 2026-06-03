@@ -176,14 +176,7 @@ func (w *VersionWatcher) ReconcileByTag(tag string) *ReconcileResult {
 	result.ArtifactUploaded = true
 	result.NacosMetaPublished = true
 
-	// Sync subnet maps.
-	if err := w.runSyncTargets(targets, tag); err != nil {
-		result.Error = fmt.Sprintf("sync targets: %v", err)
-		return result
-	}
-	result.SubnetMapSynced = true
-
-	log.Printf("[watcher] reconcile-tag=%s completed successfully", tag)
+	log.Printf("[watcher] reconcile-tag=%s completed (artifacts+meta ready, use submap/publish to switch)", tag)
 	return result
 }
 
@@ -320,30 +313,6 @@ func (w *VersionWatcher) checkArtifactsExist(version string, targets []syncTarge
 }
 
 func (w *VersionWatcher) checkNacosFullySynced(version string, targets []syncTarget) (bool, error) {
-	// Check primary Nacos: subnet_map meta version for each family.
-	for _, st := range targets {
-		metaDataID := st.dataID + "_meta"
-		content, err := w.NacosClient.GetConfig(vo.ConfigParam{DataId: metaDataID, Group: w.NacosGroup})
-		if err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "config data not exist") {
-				return false, nil
-			}
-			return false, fmt.Errorf("get %s/%s: %w", w.NacosGroup, metaDataID, err)
-		}
-		if strings.TrimSpace(content) == "" {
-			return false, nil
-		}
-		var meta struct {
-			Version string `json:"version"`
-		}
-		if err := json.Unmarshal([]byte(content), &meta); err != nil {
-			return false, nil
-		}
-		if strings.TrimSpace(meta.Version) != version {
-			return false, nil
-		}
-	}
-
 	// Check each NacosTarget: versioned meta dataId must exist.
 	for _, nacosTarget := range w.NacosTargets {
 		if !nacosTarget.Enabled {
