@@ -118,12 +118,11 @@ func (w *VersionWatcher) TryStartBackground(trigger string) bool {
 
 // ReconcileResult contains details about what was done during a reconcile.
 type ReconcileResult struct {
-	Version          string `json:"version"`
-	ArtifactUploaded bool   `json:"artifact_uploaded"`
-	NacosMetaPublished bool `json:"nacos_meta_published"`
-	SubnetMapSynced  bool   `json:"subnet_map_synced"`
-	Skipped          bool   `json:"skipped"`
-	Error            string `json:"error,omitempty"`
+	Version            string `json:"version"`
+	ArtifactUploaded   bool   `json:"artifact_uploaded"`
+	NacosMetaPublished bool   `json:"nacos_meta_published"`
+	Skipped            bool   `json:"skipped"`
+	Error              string `json:"error,omitempty"`
 }
 
 // ReconcileByTag reconciles a specific version tag.
