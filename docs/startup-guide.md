@@ -302,7 +302,8 @@ curl -X POST http://localhost:9090/api/v1/submap/rollback \
 curl -X POST .../api/v1/xdb/reconcile/tag -d '{"version":"v2.7.0"}'
 # 等待完成
 curl .../api/v1/xdb/reconcile/tag?version=v2.7.0
-# result 应显示 artifact_uploaded=true, nacos_meta_published=true, subnet_map_synced=true
+# result 应显示 artifact_uploaded=true, nacos_meta_published=true
+# 注意：reconcile/tag 不更新 subnet_map，需要手动调 submap/publish 切换
 ```
 
 ### 场景 E：并发请求幂等性

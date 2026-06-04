@@ -46,8 +46,7 @@ ip2region:
 | 检查项 | 方法 | 含义 |
 |--------|------|------|
 | 制品库 xdb 存在 | `checkArtifactsExist()` — HEAD 请求 | 该版本已上传制品库 |
-| Nacos versioned meta 存在 | `checkNacosFullySynced()` — GetConfig | ip2region_meta 已发布 |
-| Nacos subnet_map_meta 版本匹配 | 同上 | subnet_map 已同步 |
+| Nacos versioned meta 存在 | `checkNacosFullySynced()` — GetConfig | 各 NacosTarget 的 versioned dataId 已发布 |
 
 ### Reconcile 流程（每次 poll/cron 触发）
 
@@ -56,11 +55,12 @@ ip2region:
 2. checkArtifactsExist(latestTag)
    → 所有 nacos_targets 的 v4/v6 artifact path 都存在？
 3. checkNacosFullySynced(latestTag)
-   → 主 Nacos subnet_map_meta version == latestTag？
    → 各 NacosTarget versioned dataId 存在？
-4. 全部满足 → return（无需本地文件）
-5. 任一不满足 → 下载 release → 上传制品库 → 发布 meta → 重建 subnet_map
+4. 全部满足 → return（无需操作）
+5. 任一不满足 → 下载 release → 上传制品库 → 发布 versioned meta
 ```
+
+> SubMap 同步由独立流程处理（`submap/publish` API 或 poll 自动更新策略）。
 
 ### 移除的代码
 - `migrateLegacyVersionFile()` — 不再有本地版本文件迁移
@@ -113,28 +113,23 @@ ON CONFLICT (version) DO UPDATE
 
 ### API 接口
 
-| Method | Path | 说明 |
-|--------|------|------|
-| POST | `/api/v1/xdb/reconcile/tag` | 触发指定 tag 对齐（异步） |
-| GET | `/api/v1/xdb/reconcile/tag?version=xxx` | 查询任务状态 |
-| GET | `/api/v1/xdb/status` | 当前 Pod + 最近 reconcile 状态 |
-| POST | `/api/v1/reconcile` | 触发 latest poll（已有，保持不变） |
+> 完整接口文档参见 `ipdb_manger_v2.md` 第 5 章。此处仅列出本次新增/修改的接口。
 
-### POST `/api/v1/xdb/reconcile/tag` 请求/响应
-
-**请求：**
-```json
-{"version": "v2.8.0"}
-```
-
-**响应场景：**
-
-| 场景 | HTTP Code | 响应 |
-|------|-----------|------|
-| 任务已 done 且 <1h | 200 | `{status: "done", result: {...}}` |
-| 正在运行 | 202 | `{status: "running", started_at: ...}` |
-| 成功接受 | 202 | `{status: "accepted", pod_id: "..."}` |
-| 被其他 Pod 抢走 | 202 | `{status: "running", message: "..."}` |
+| # | Method | Path | 说明 |
+|---|--------|------|------|
+| 1 | POST | `/api/v1/xdb/reconcile/tag` | 触发指定 tag 制品对齐（异步） |
+| 2 | GET | `/api/v1/xdb/reconcile/tag?version=xxx` | 查询 reconcile 任务状态 |
+| 3 | GET | `/api/v1/xdb/status` | 当前 Pod + 最近 reconcile 状态 |
+| 4 | GET | `/api/v1/xdb/versions` | 查看版本列表（current + history） |
+| 5 | POST | `/api/v1/xdb/target` | 设置 Agent 目标版本 |
+| 6 | POST | `/api/v1/xdb/rollback` | 回滚 Agent 目标版本 |
+| 7 | GET | `/api/v1/submap/current` | 查看当前 SubMap 版本 |
+| 8 | POST | `/api/v1/submap/publish` | 切换 SubMap 到指定版本（异步） |
+| 9 | POST | `/api/v1/submap/rollback` | 回滚 SubMap 到历史版本（异步） |
+| 10 | POST | `/api/v1/heartbeat` | Agent 心跳上报 |
+| 11 | GET | `/api/v1/agents/status` | 查看 Agent 列表和状态 |
+| 12 | GET/PUT | `/api/v1/agents/policy` | Agent 自动更新策略 |
+| 13 | GET/PUT | `/api/v1/submap/policy` | SubMap 自动更新策略 |
 
 ### ReconcileByTag 执行逻辑
 
@@ -143,10 +138,11 @@ ON CONFLICT (version) DO UPDATE
    → 全部就绪？标记 skipped，done
 2. fetchReleaseByTag(tag) — GitHub /releases/tags/{tag}
 3. downloadAndExtractReleaseData
-4. publishIP2RegionMeta (上传制品库 + 发布 Nacos meta)
-5. runSyncTargets (重建 subnet_map)
-6. 返回 ReconcileResult（哪些步骤执行了）
+4. publishIP2RegionMeta (上传制品库 + 发布 Nacos versioned meta)
+5. 返回 ReconcileResult（哪些步骤执行了）
 ```
+
+> **注意**：reconcile/tag 不再同步 subnet_map。SubMap 切换由独立接口 `/api/v1/submap/publish` 完成。
 
 ### ReconcileResult 结构
 
@@ -155,64 +151,17 @@ type ReconcileResult struct {
     Version            string `json:"version"`
     ArtifactUploaded   bool   `json:"artifact_uploaded"`
     NacosMetaPublished bool   `json:"nacos_meta_published"`
-    SubnetMapSynced    bool   `json:"subnet_map_synced"`
     Skipped            bool   `json:"skipped"`
     Error              string `json:"error,omitempty"`
 }
 ```
 
----
+### checkNacosFullySynced 逻辑
 
-## 3.5 SubMap 管理接口 + XDB 版本查询
+仅检查各 NacosTarget 的 versioned dataId（如 `ip2region_meta_v3.16.0`）是否存在且内容非空。
+不再检查 subnet_map_meta 的 version 字段（因为 reconcile 和 submap 已解耦）。
 
-### 新增/补齐接口
-
-| Method | Path | 说明 |
-|--------|------|------|
-| GET | `/api/v1/xdb/versions` | 查看当前版本 + 历史已处理版本列表 |
-| GET | `/api/v1/submap/current` | 查看各 family (v4/v6) subnet_map 当前版本和更新时间 |
-| POST | `/api/v1/submap/publish` | 指定版本手动重建 subnet_map（异步） |
-| POST | `/api/v1/submap/rollback` | 回滚 subnet_map 到指定版本（异步） |
-
-### GET `/api/v1/xdb/versions` 响应
-
-```json
-{
-  "current_version": "v2.9.0",
-  "current_updated_at": "2026-06-01T14:30:00Z",
-  "versions": ["v2.9.0", "v2.8.0", "v2.7.0"]
-}
-```
-
-- `current_version` — 从主 Nacos `subnet_map_meta` 读取
-- `versions` — 从 PG `reconcile_task` 表中 status=done 的记录
-
-### GET `/api/v1/submap/current` 响应
-
-```json
-{
-  "v4": {"data_id": "subnet_map", "version": "v2.9.0", "updated_at": "2026-06-01T14:30:00Z"},
-  "v6": {"data_id": "subnet_map_v6", "version": "v2.9.0", "updated_at": "2026-06-01T14:30:00Z"}
-}
-```
-
-### POST `/api/v1/submap/publish` 请求
-
-```json
-{"version": "v2.9.0"}
-```
-
-响应 `202 Accepted`，后台异步下载该版本 release → 重建 subnet_map → 发布到 Nacos。
-
-### POST `/api/v1/submap/rollback` 请求
-
-```json
-{"version": "v2.7.0"}
-```
-
-语义同 publish，但明确表达意图是回滚。内部调用相同的 `SyncSubnetMapByTag(version)` 方法。
-
-### 新增 watcher 方法
+### SyncSubnetMapByTag 方法
 
 ```go
 func (w *VersionWatcher) SyncSubnetMapByTag(tag string) error
@@ -231,6 +180,8 @@ func (w *VersionWatcher) SyncSubnetMapByTag(tag string) error
 | 用 PG 而非 Redis 做任务锁 | 已有 PG 依赖，不引入新组件 |
 | 任务结果有效期 1h | 超过 1h 的 done 结果允许被重新触发，确保能修复中间故障 |
 | PodID 取 HOSTNAME | K8S Pod 天然唯一，无需额外生成 |
+| reconcile/tag 与 submap 解耦 | reconcile 只负责制品+meta 就绪，submap 切换是独立的发布动作，避免 reconcile 意外改变线上流量 |
+| node_status 软删除 | `deleted_at BIGINT DEFAULT 0` + 唯一索引 `(agent_id, deleted_at)`，保留历史记录 |
 
 ---
 
